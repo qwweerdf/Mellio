@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Markdown } from './Markdown'
 import { ModelInput } from './ModelInput'
-import type { Bot, Conversation, Message, ReplyMode, WebSource } from '../../../shared/types'
+import type { Bot, Conversation, Message, ReplyMode, ToolStep, WebSource } from '../../../shared/types'
 import { BotAvatar, GroupAvatar } from './Avatar'
 import { gsap, prefersReducedMotion, revealSafety, useGSAP } from './motion'
 import { useStore } from './store'
@@ -284,7 +284,9 @@ function MessageStream({
     timeline.length,
     last?.content.length,
     last?.sources?.length,
-    last?.searchQueries?.length
+    last?.searchQueries?.length,
+    last?.steps?.length,
+    last?.steps?.map(step => step.status).join(',')
   ])
 
   return (
@@ -366,6 +368,8 @@ function BotMessage({ message, bot }: { message: Message; bot?: Bot }) {
           <SearchSummary queries={message.searchQueries} sources={message.sources} />
         )}
 
+        {message.steps && message.steps.length > 0 && <ToolTrace steps={message.steps} />}
+
         {message.content ? (
           <div className="md">
             <Markdown content={message.content} streaming={streaming} />
@@ -421,6 +425,63 @@ function SearchSummary({ queries, sources }: { queries?: string[]; sources?: Web
             ))}
           </ol>
         )}
+      </div>
+    </details>
+  )
+}
+
+function ToolTrace({ steps }: { steps: ToolStep[] }) {
+  return (
+    <div className="msg-tools">
+      {steps.map(step => (
+        <ToolStepCard key={step.id} step={step} />
+      ))}
+    </div>
+  )
+}
+
+function ToolStepCard({ step }: { step: ToolStep }) {
+  const { t } = useT()
+  const [open, setOpen] = useState(step.status === 'error')
+  const status =
+    step.status === 'running'
+      ? t('chat.toolRunning')
+      : step.status === 'error'
+        ? t('chat.toolError')
+        : t('chat.toolDone')
+  const input =
+    step.input === undefined
+      ? ''
+      : typeof step.input === 'string'
+        ? step.input
+        : JSON.stringify(step.input, null, 2)
+
+  return (
+    <details
+      className={`msg-tool is-${step.status}`}
+      open={open}
+      onToggle={event => setOpen(event.currentTarget.open)}
+    >
+      <summary>
+        <span className="msg-tool-dot" aria-hidden="true" />
+        <span className="msg-tool-name">{step.toolName}</span>
+        <span className="msg-tool-status">{status}</span>
+        <IconChevron open={open} />
+      </summary>
+      <div className="msg-tool-body">
+        {input && (
+          <>
+            <span className="msg-tool-label">{t('chat.toolInput')}</span>
+            <pre>{input}</pre>
+          </>
+        )}
+        {step.output && (
+          <>
+            <span className="msg-tool-label">{t('chat.toolOutput')}</span>
+            <pre>{step.output}</pre>
+          </>
+        )}
+        {step.error && <p className="msg-tool-error">{step.error}</p>}
       </div>
     </details>
   )

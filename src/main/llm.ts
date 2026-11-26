@@ -1,13 +1,15 @@
-// AI SDK 客户端：
+// AI SDK 客户端 + ReAct Agent：
+// - ToolLoopAgent 负责模型/工具循环、停止条件、步骤结果
 // - 普通 OpenAI 兼容服务走 @ai-sdk/openai-compatible
-// - DeepSeek 的 Chat Completions 原生搜索走 AI SDK + 自定义 fetch（保留 sources/queries）
+// - DeepSeek Chat Completions 原生搜索走 AI SDK + 自定义 fetch（保留 sources/queries）
 // - DeepSeek v4-pro 的官方 Responses 搜索走 @ai-sdk/deepseek + tools.webSearch()
-// 业务层仍然只看到 AsyncGenerator<ChatChunk>，orchestrator 不用改。
+// orchestrator 只看到 AsyncGenerator<ChatChunk>。
 
 import { createDeepSeek } from '@ai-sdk/deepseek'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
-import { streamText } from 'ai'
-import type { ProviderType, WebSource } from '../../shared/types'
+import { isStepCount, streamText, ToolLoopAgent, type LanguageModel } from 'ai'
+import type { ProviderType, ToolStep, WebSource } from '../../shared/types'
+import { calculatorTool } from './agent/tools/calculator'
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
@@ -17,10 +19,12 @@ export interface ChatMessage {
 export interface ChatChunk {
   delta?: string
   usage?: { in: number; out: number }
-  /** 原生 Web Search 返回的引用，流结束时一次性给出 */
+  /** 原生 Web Search 返回的引用 */
   sources?: WebSource[]
   /** 本次回复实际发起的搜索关键词 */
   queries?: string[]
+  /** ReAct 工具步骤（新增/更新） */
+  step?: ToolStep
 }
 
 export interface ChatParams {
@@ -39,79 +43,143 @@ export async function* chat(params: ChatParams): AsyncGenerator<ChatChunk> {
   }
   if (!params.apiKey) throw new Error('这个服务商还没有配置 API Key')
 
+  // DeepSeek v4-pro 的 web_search 是 provider-executed 工具，没有本地 execute，
+  // ToolLoopAgent 会在工具调用后停止。这里保留官方 Responses 流式路径（不带本地工具）。
   if (params.provider.type === 'deepseek' && isDeepSeekPro(params.model)) {
-    yield* deepSeekResponsesChat(params)
+    yield* deepSeekProChat(params)
     return
   }
-  yield* compatibleChat(params)
-}
 
-// ---------- OpenAI 兼容 / DeepSeek Chat Completions ----------
-
-async function* compatibleChat(params: ChatParams): AsyncGenerator<ChatChunk> {
-  const searchState =
-    params.provider.type === 'deepseek' && isDeepSeekFlash(params.model)
-      ? createSearchState()
-      : undefined
+  const state = createSearchState()
+  const { model, tools } = createAgentModel(params, state)
   const { instructions, messages } = splitSystemMessages(params.messages)
 
-  const provider = createOpenAICompatible({
-    name: params.provider.type === 'deepseek' ? 'deepseek' : 'openai-compatible',
-    baseURL: params.provider.baseUrl,
-    apiKey: params.apiKey,
-    includeUsage: true,
-    ...(searchState ? { fetch: createDeepSeekFetch(searchState) } : {})
-  })
-
-  const result = streamText({
-    model: provider(params.model),
+  const agent = new ToolLoopAgent({
+    model,
     instructions,
-    messages,
-    temperature: searchState ? undefined : params.temperature,
-    abortSignal: params.signal
+    tools,
+    stopWhen: isStepCount(6),
+    temperature:
+      params.provider.type === 'deepseek' &&
+      (isDeepSeekFlash(params.model) || isDeepSeekPro(params.model))
+        ? undefined
+        : params.temperature
   })
 
-  let emittedVersion = 0
+  const result = await agent.stream({ messages, abortSignal: params.signal })
+  const steps = new Map<string, ToolStep>()
+  let emittedSearch = 0
   let usage: ChatChunk['usage']
 
-  for await (const part of result.fullStream) {
-    switch (part.type) {
-      case 'text-delta':
-        if (part.text) yield { delta: part.text }
-        break
-      case 'source':
-        if (part.sourceType === 'url' && searchState) {
-          addSource(searchState.sources, { url: part.url, title: part.title })
-          searchState.version++
+  try {
+    for await (const part of result.fullStream) {
+      switch (part.type) {
+        case 'text-delta':
+          if (part.text) yield { delta: part.text }
+          break
+        case 'tool-call': {
+          if (part.providerExecuted) break
+          const step: ToolStep = {
+            id: part.toolCallId,
+            toolName: part.toolName,
+            input: part.input,
+            status: 'running',
+            startedAt: Date.now()
+          }
+          steps.set(step.id, step)
+          yield { step }
+          break
         }
-        break
-      case 'finish':
-        usage = toUsage(part.totalUsage)
-        break
-      case 'error':
-        throw asError(part.error)
-    }
+        case 'tool-result': {
+          if (part.toolName === 'web_search') {
+            ingestDeepSeekToolOutput(part.output, state)
+            break
+          }
+          if (part.providerExecuted) break
+          const step = steps.get(part.toolCallId) ?? {
+            id: part.toolCallId,
+            toolName: part.toolName,
+            status: 'running' as const,
+            startedAt: Date.now()
+          }
+          const next: ToolStep = {
+            ...step,
+            output: toolOutputText(part.output),
+            status: 'done',
+            endedAt: Date.now()
+          }
+          steps.set(next.id, next)
+          yield { step: next }
+          break
+        }
+        case 'tool-error': {
+          const step = steps.get(part.toolCallId) ?? {
+            id: part.toolCallId,
+            toolName: part.toolName,
+            status: 'running' as const,
+            startedAt: Date.now()
+          }
+          const next: ToolStep = {
+            ...step,
+            status: 'error',
+            error: errorText(part.error),
+            endedAt: Date.now()
+          }
+          steps.set(next.id, next)
+          yield { step: next }
+          break
+        }
+        case 'source':
+          if (part.sourceType === 'url') {
+            addSource(state.sources, { url: part.url, title: part.title })
+            state.version++
+          }
+          break
+        case 'finish':
+          usage = toUsage(part.totalUsage)
+          break
+        case 'error':
+          throw asError(part.error)
+      }
 
-    if (searchState && searchState.version !== emittedVersion) {
-      emittedVersion = searchState.version
-      yield { sources: [...searchState.sources], queries: [...searchState.queries] }
+      if (state.version !== emittedSearch) {
+        emittedSearch = state.version
+        yield { sources: [...state.sources], queries: [...state.queries] }
+      }
     }
+  } catch (err) {
+    for (const step of steps.values()) {
+      if (step.status !== 'running') continue
+      const next: ToolStep = {
+        ...step,
+        status: 'error',
+        error: errorText(err),
+        endedAt: Date.now()
+      }
+      steps.set(next.id, next)
+      yield { step: next }
+    }
+    throw err
   }
 
-  if (searchState) {
-    await searchState.done
-    if (searchState.version !== emittedVersion) {
-      yield { sources: [...searchState.sources], queries: [...searchState.queries] }
-    }
+  await state.done
+
+  for (const step of steps.values()) {
+    if (step.status !== 'running') continue
+    const next: ToolStep = { ...step, status: 'done', endedAt: Date.now() }
+    steps.set(next.id, next)
+    yield { step: next }
+  }
+
+  if (state.version !== emittedSearch) {
+    yield { sources: [...state.sources], queries: [...state.queries] }
   }
   if (usage) yield { usage }
 }
 
-// ---------- DeepSeek Responses（官方 webSearch 工具） ----------
-
-async function* deepSeekResponsesChat(params: ChatParams): AsyncGenerator<ChatChunk> {
+async function* deepSeekProChat(params: ChatParams): AsyncGenerator<ChatChunk> {
   const deepseek = createDeepSeek({
-    apiKey: params.apiKey,
+    apiKey: params.apiKey ?? '',
     baseURL: params.provider.baseUrl || undefined
   })
   const state = createSearchState()
@@ -125,7 +193,7 @@ async function* deepSeekResponsesChat(params: ChatParams): AsyncGenerator<ChatCh
     abortSignal: params.signal
   })
 
-  let emittedVersion = 0
+  let emittedSearch = 0
   let usage: ChatChunk['usage']
 
   for await (const part of result.fullStream) {
@@ -149,16 +217,48 @@ async function* deepSeekResponsesChat(params: ChatParams): AsyncGenerator<ChatCh
         throw asError(part.error)
     }
 
-    if (state.version !== emittedVersion) {
-      emittedVersion = state.version
+    if (state.version !== emittedSearch) {
+      emittedSearch = state.version
       yield { sources: [...state.sources], queries: [...state.queries] }
     }
   }
 
-  if (state.version !== emittedVersion) {
+  if (state.version !== emittedSearch) {
     yield { sources: [...state.sources], queries: [...state.queries] }
   }
   if (usage) yield { usage }
+}
+
+function createAgentModel(
+  params: ChatParams,
+  state: SearchState
+): { model: LanguageModel; tools: Record<string, any> } {
+  const tools: Record<string, any> = { calculator: calculatorTool }
+
+  const flashSearch = params.provider.type === 'deepseek' && isDeepSeekFlash(params.model)
+  const provider = createOpenAICompatible({
+    name: params.provider.type === 'deepseek' ? 'deepseek' : 'openai-compatible',
+    baseURL: params.provider.baseUrl,
+    apiKey: params.apiKey ?? '',
+    includeUsage: true,
+    ...(flashSearch ? { fetch: createDeepSeekFetch(state) } : {})
+  })
+  return { model: provider(params.model), tools }
+}
+
+function toolOutputText(output: unknown): string {
+  const value = unwrapToolOutput(output)
+  let text: string
+  try {
+    text = typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+  } catch {
+    text = String(value)
+  }
+  return text.length > 4000 ? `${text.slice(0, 4000)}…[truncated]` : text
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 function splitSystemMessages(messages: ChatMessage[]): {
@@ -218,7 +318,11 @@ function createDeepSeekFetch(state: SearchState): FetchLike {
     if (typeof init?.body === 'string') {
       try {
         const body = JSON.parse(init.body) as Record<string, unknown>
-        body.tools = [{ type: 'deepseek_web_search' }]
+        const tools = Array.isArray(body.tools) ? [...body.tools] : []
+        if (!tools.some(tool => (tool as { type?: unknown }).type === 'deepseek_web_search')) {
+          tools.push({ type: 'deepseek_web_search' })
+        }
+        body.tools = tools
         delete body.temperature
         delete body.tool_choice
         next = { ...init, body: JSON.stringify(body) }

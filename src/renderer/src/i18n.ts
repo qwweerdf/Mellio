@@ -92,6 +92,11 @@ export const zh = {
   'chat.searchSummary': '搜索 {queries} 个关键词，参考 {sources} 篇资料',
   'chat.searchSummaryQueries': '搜索 {queries} 个关键词',
   'chat.searchSummarySources': '联网搜索 · 参考 {sources} 篇资料',
+  'chat.toolRunning': '执行中',
+  'chat.toolDone': '完成',
+  'chat.toolError': '失败',
+  'chat.toolInput': '输入',
+  'chat.toolOutput': '结果',
 
   'bot.newTitle': '新建 Bot',
   'bot.editTitle': '编辑 Bot',
@@ -269,6 +274,11 @@ const en: Record<StringKey, string> = {
   'chat.searchSummary': 'Searched {queries} keywords, used {sources} sources',
   'chat.searchSummaryQueries': 'Searched {queries} keywords',
   'chat.searchSummarySources': 'Web search · {sources} sources',
+  'chat.toolRunning': 'Running',
+  'chat.toolDone': 'Done',
+  'chat.toolError': 'Failed',
+  'chat.toolInput': 'Input',
+  'chat.toolOutput': 'Result',
 
   'bot.newTitle': 'New Bot',
   'bot.editTitle': 'Edit Bot',

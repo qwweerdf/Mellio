@@ -368,6 +368,15 @@ export const useStore = create<UiStore>((set, get) => ({
             }
           : m
       )
+    } else if (event.type === 'step') {
+      next = list.map(m => {
+        if (m.id !== event.messageId) return m
+        const steps = [...(m.steps ?? [])]
+        const index = steps.findIndex(step => step.id === event.step.id)
+        if (index >= 0) steps[index] = event.step
+        else steps.push(event.step)
+        return { ...m, steps }
+      })
     } else if (event.type === 'done') {
       next = list.map(m =>
         m.id === event.messageId

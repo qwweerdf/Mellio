@@ -61,6 +61,17 @@ export interface WebSource {
   snippet?: string
 }
 
+export interface ToolStep {
+  id: string
+  toolName: string
+  input?: unknown
+  output?: string
+  status: 'running' | 'done' | 'error'
+  error?: string
+  startedAt: number
+  endedAt?: number
+}
+
 export interface Message {
   id: string
   conversationId: string
@@ -74,6 +85,8 @@ export interface Message {
   sources?: WebSource[]
   /** 本次回复实际发起的搜索关键词 */
   searchQueries?: string[]
+  /** ReAct 工具调用步骤 */
+  steps?: ToolStep[]
   createdAt: number
 }
 
@@ -105,6 +118,14 @@ export type RunEvent =
       messageId: string
       sources?: WebSource[]
       queries?: string[]
+    }
+  | {
+      type: 'step'
+      runId: string
+      conversationId: string
+      botId: string
+      messageId: string
+      step: ToolStep
     }
   | {
       type: 'done'

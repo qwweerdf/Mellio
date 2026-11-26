@@ -2,7 +2,7 @@
 // 不依赖 Electron——可以用注入的 chat 在 Node 里直接测（见 scripts/selfcheck.ts）。
 
 import { randomUUID } from 'node:crypto'
-import type { Bot, Conversation, Message, RunEvent, SendInput, SendResult, WebSource } from '../../shared/types'
+import type { Bot, Conversation, Message, RunEvent, SendInput, SendResult, ToolStep, WebSource } from '../../shared/types'
 import * as repo from './repo'
 import { chat as realChat, type ChatMessage } from './llm'
 import { composeSystemPrompt } from './prompt'
@@ -118,6 +118,7 @@ async function runOne(
   let content = ''
   let sources: WebSource[] = []
   let queries: string[] = []
+  const steps: ToolStep[] = []
 
   try {
     const bot = repo.getBot(botId)
@@ -155,13 +156,27 @@ async function runOne(
           queries: chunk.queries
         })
       }
+      if (chunk.step) {
+        const index = steps.findIndex(step => step.id === chunk.step?.id)
+        if (index >= 0) steps[index] = chunk.step
+        else steps.push(chunk.step)
+        deps.emit({
+          type: 'step',
+          runId,
+          conversationId,
+          botId,
+          messageId: message.id,
+          step: chunk.step
+        })
+      }
     }
 
     repo.updateMessage(message.id, {
       content,
       status: 'done',
       sources: sources.length > 0 ? sources : undefined,
-      searchQueries: queries.length > 0 ? queries : undefined
+      searchQueries: queries.length > 0 ? queries : undefined,
+      steps: steps.length > 0 ? steps : undefined
     })
     deps.emit({
       type: 'done',
@@ -181,7 +196,8 @@ async function runOne(
         status: 'error',
         error,
         sources: sources.length ? sources : undefined,
-        searchQueries: queries.length ? queries : undefined
+        searchQueries: queries.length ? queries : undefined,
+        steps: steps.length ? steps : undefined
       })
       deps.emit({ type: 'error', runId, conversationId, botId, messageId: message.id, error })
     } else if (controller.signal.aborted) {
@@ -189,7 +205,8 @@ async function runOne(
         content,
         status: 'cancelled',
         sources: sources.length ? sources : undefined,
-        searchQueries: queries.length ? queries : undefined
+        searchQueries: queries.length ? queries : undefined,
+        steps: steps.length ? steps : undefined
       })
       deps.emit({ type: 'cancelled', runId, conversationId, botId, messageId: message.id })
     } else {
@@ -199,7 +216,8 @@ async function runOne(
         status: 'error',
         error,
         sources: sources.length ? sources : undefined,
-        searchQueries: queries.length ? queries : undefined
+        searchQueries: queries.length ? queries : undefined,
+        steps: steps.length ? steps : undefined
       })
       deps.emit({ type: 'error', runId, conversationId, botId, messageId: message.id, error })
     }

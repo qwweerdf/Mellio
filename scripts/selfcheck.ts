@@ -10,8 +10,9 @@ import * as repo from '../src/main/repo'
 import { cancelRun, respond, type ChatFn, type RespondDeps } from '../src/main/orchestrator'
 import { chat } from '../src/main/llm'
 import { composeSystemPrompt } from '../src/main/prompt'
-import { runReAct, type ChatFn as ReActChatFn } from '../src/main/agent/react'
+import { isStepCount, ToolLoopAgent } from 'ai'
 import { calculatorTool, evaluateExpression } from '../src/main/agent/tools/calculator'
+import { createMockCalculatorModel } from './mock-agent-model'
 import type { RunEvent } from '../shared/types'
 
 function makeDir(): string {
@@ -278,9 +279,13 @@ async function testDeepSeekAutoSearch(): Promise<void> {
   server.close()
   server.closeAllConnections()
 
-  assert.deepEqual(bodies[0]?.tools, [{ type: 'deepseek_web_search' }])
+  const tools0 = bodies[0]?.tools as Array<{ type?: string; function?: { name?: string } }>
+  const tools1 = bodies[1]?.tools as Array<{ type?: string; function?: { name?: string } }>
+  assert.ok(tools0.some(tool => tool.type === 'deepseek_web_search'))
+  assert.ok(tools0.some(tool => tool.function?.name === 'calculator'))
   assert.equal(bodies[0]?.temperature, undefined, '带搜索工具时不传 temperature')
-  assert.equal(bodies[1]?.tools, undefined, '不支持搜索的模型不声明工具')
+  assert.ok(tools1.every(tool => tool.type !== 'deepseek_web_search'), '不支持搜索的模型不声明搜索工具')
+  assert.ok(tools1.some(tool => tool.function?.name === 'calculator'))
   assert.equal(bodies[1]?.temperature, 0.7)
   console.log('  ✓ DeepSeek 自动联网（模型决定是否调用）')
 }
@@ -293,29 +298,24 @@ async function testCalculatorReact(): Promise<void> {
   await assert.rejects(() => evaluateExpression('sqrt.constructor'))
   await assert.rejects(() => evaluateExpression('[1, 2]'))
 
-  let calls = 0
-  const fake: ReActChatFn = async ({ messages }) => {
-    calls++
-    if (messages.some(message => message.role === 'tool')) return { content: '结果是 14。' }
-    return {
-      content: '',
-      toolCalls: [
-        { id: 'call_1', name: 'calculator', arguments: '{"expression":"2 + 3 * 4"}' }
-      ]
-    }
-  }
-  const result = await runReAct({
-    messages: [{ role: 'user', content: '算一下' }],
-    tools: [calculatorTool],
-    chat: fake
+  const agent = new ToolLoopAgent({
+    model: createMockCalculatorModel(),
+    instructions: 'Use the calculator tool for arithmetic.',
+    tools: { calculator: calculatorTool },
+    stopWhen: isStepCount(6)
   })
-  assert.equal(result.content, '结果是 14。')
-  assert.deepEqual(
-    result.steps.map(event => event.type),
-    ['tool_call', 'tool_result', 'final']
-  )
-  assert.equal(calls, 2)
-  console.log('  ✓ ReAct 循环 + calculator 工具')
+  const result = await agent.stream({
+    messages: [{ role: 'user', content: '算一下 (12 + 8) * 3，再算 sqrt(144)' }]
+  })
+  let text = ''
+  for await (const part of result.fullStream) {
+    if (part.type === 'text-delta') text += part.text
+  }
+  assert.equal(text, '两个结果分别是 60 和 12。')
+  const steps = await result.steps
+  assert.equal(steps.length, 3)
+  assert.equal(steps.flatMap(step => step.toolCalls).length, 2)
+  console.log('  ✓ ToolLoopAgent 循环 + calculator 工具')
 }
 
 async function main(): Promise<void> {

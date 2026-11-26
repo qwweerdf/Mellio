@@ -1,13 +1,13 @@
-// ReAct + calculator 最小可运行 demo。
+// ReAct + calculator demo，使用 AI SDK 的 ToolLoopAgent。
 // 默认离线 mock；设置 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL 后走真实 OpenAI 兼容接口。
 //
 //   npm run demo:react
 //   npm run demo:react -- "帮我算 (12 + 8) * 3，再算 sqrt(144)"
-//   LLM_BASE_URL=https://api.deepseek.com/v1 LLM_API_KEY=sk-... LLM_MODEL=deepseek-flash npm run demo:react
 
-import { createOpenAiChat } from '../src/main/agent/openai'
-import { runReAct, type AgentMessage, type ChatFn, type ReActEvent } from '../src/main/agent/react'
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
+import { isStepCount, ToolLoopAgent } from 'ai'
 import { calculatorTool } from '../src/main/agent/tools/calculator'
+import { createMockCalculatorModel } from './mock-agent-model'
 
 const SYSTEM_PROMPT = `You are a ReAct agent.
 Use the calculator tool for any arithmetic. Never calculate in your head.
@@ -22,110 +22,64 @@ async function main(): Promise<void> {
   const apiKey = process.env.LLM_API_KEY ?? process.env.DEEPSEEK_API_KEY ?? ''
   const useMock = forceMock || !apiKey
   const baseUrl = process.env.LLM_BASE_URL ?? 'https://api.deepseek.com/v1'
-  const model = process.env.LLM_MODEL ?? 'deepseek-flash'
+  const modelId = process.env.LLM_MODEL ?? 'deepseek-flash'
 
-  const chat: ChatFn = useMock
-    ? mockChat
-    : createOpenAiChat({ baseUrl, apiKey, model, temperature: 0.2 })
+  const model = useMock
+    ? createMockCalculatorModel()
+    : createOpenAICompatible({ name: 'mellio-demo', baseURL: baseUrl, apiKey })(modelId)
 
-  console.log('ReAct demo · calculator only')
-  console.log(`mode     ${useMock ? 'mock (offline)' : `${model} @ ${baseUrl}`}`)
+  const agent = new ToolLoopAgent({
+    model,
+    instructions: SYSTEM_PROMPT,
+    tools: { calculator: calculatorTool },
+    stopWhen: isStepCount(6)
+  })
+
+  console.log('ReAct demo · ToolLoopAgent + calculator')
+  console.log(`mode     ${useMock ? 'mock (offline)' : `${modelId} @ ${baseUrl}`}`)
   console.log(`question ${question}`)
   console.log('')
 
-  const result = await runReAct({
-    messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: question }
-    ],
-    tools: [calculatorTool],
-    chat,
-    maxSteps: 6,
-    onEvent: printEvent
+  const result = await agent.stream({
+    messages: [{ role: 'user', content: question }]
   })
 
-  if (!result.content.trim()) {
-    console.log('(agent produced no final text)')
-  }
-  console.log('')
-  console.log(`done · ${result.steps.length} events`)
-}
-
-function printEvent(event: ReActEvent): void {
-  switch (event.type) {
-    case 'assistant':
-      console.log(`[step ${event.step}] assistant`)
-      console.log(indent(event.content))
-      console.log('')
-      break
-    case 'tool_call':
-      console.log(`[step ${event.step}] tool_call → ${event.call.name}`)
-      console.log(indent(prettyJson(event.call.arguments)))
-      console.log('')
-      break
-    case 'tool_result':
-      console.log(`[step ${event.step}] tool_result${event.isError ? ' (error)' : ''} ← ${event.call.name}`)
-      console.log(indent(prettyJson(event.result)))
-      console.log('')
-      break
-    case 'final':
-      console.log(`[step ${event.step}] final`)
-      console.log(indent(event.content))
-      break
-    case 'limit':
-      console.log(`[step ${event.step}] stopped: max steps reached`)
-      console.log(indent(event.content))
-      break
-  }
-}
-
-// 离线 mock：第一轮调用 calculator，第二轮再调用一次，第三轮给最终答案。
-// 用来在没有任何 API Key 的情况下验证循环、事件和步骤输出。
-const mockChat: ChatFn = async ({ messages }) => {
-  const toolMessages = messages.filter(
-    (message): message is Extract<AgentMessage, { role: 'tool' }> => message.role === 'tool'
-  )
-  if (toolMessages.length === 0) {
-    return {
-      content: '我先算第一个表达式。',
-      toolCalls: [
-        {
-          id: 'call_1',
-          name: 'calculator',
-          arguments: JSON.stringify({ expression: '(12 + 8) * 3' })
+  let printedText = false
+  for await (const part of result.fullStream) {
+    switch (part.type) {
+      case 'tool-call':
+        console.log(`tool_call → ${part.toolName}`)
+        console.log(indent(pretty(part.input)))
+        console.log('')
+        break
+      case 'tool-result':
+        console.log(`tool_result ← ${part.toolName}`)
+        console.log(indent(pretty(part.output)))
+        console.log('')
+        break
+      case 'text-delta':
+        if (!printedText) {
+          console.log('final')
+          printedText = true
         }
-      ]
+        process.stdout.write(part.text)
+        break
+      case 'finish':
+        if (printedText) console.log('')
+        console.log('')
+        console.log(`done · finish=${part.finishReason} · tokens in=${part.totalUsage.inputTokens ?? 0} out=${part.totalUsage.outputTokens ?? 0}`)
+        break
+      case 'error':
+        throw part.error
     }
   }
-  if (toolMessages.length === 1) {
-    return {
-      content: '再算第二个。',
-      toolCalls: [
-        {
-          id: 'call_2',
-          name: 'calculator',
-          arguments: JSON.stringify({ expression: 'sqrt(144)' })
-        }
-      ]
-    }
-  }
-
-  const values = toolMessages.map(message => {
-    try {
-      const parsed = JSON.parse(message.content) as { value?: unknown }
-      return String(parsed.value)
-    } catch {
-      return message.content
-    }
-  })
-  return { content: `两个结果分别是 ${values.join(' 和 ')}。` }
 }
 
-function prettyJson(raw: string): string {
+function pretty(value: unknown): string {
   try {
-    return JSON.stringify(JSON.parse(raw), null, 2)
+    return typeof value === 'string' ? value : JSON.stringify(value, null, 2)
   } catch {
-    return raw
+    return String(value)
   }
 }
 

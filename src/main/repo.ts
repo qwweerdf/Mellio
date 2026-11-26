@@ -17,6 +17,7 @@ import type {
   ProviderType,
   ProviderView,
   ReplyMode,
+  ToolStep,
   WebSource
 } from '../../shared/types'
 
@@ -87,13 +88,14 @@ CREATE TABLE IF NOT EXISTS message (
   error TEXT,
   sources_json TEXT NOT NULL DEFAULT '[]',
   queries_json TEXT NOT NULL DEFAULT '[]',
+  steps_json TEXT NOT NULL DEFAULT '[]',
   created_at INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_msg_conv ON message(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_conv_bot ON conversation_bot(bot_id);
 
-PRAGMA user_version = 4;
+PRAGMA user_version = 5;
 `
 
 export function initRepo(dir: string): void {
@@ -102,9 +104,9 @@ export function initRepo(dir: string): void {
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;')
   let version = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version)
   if (version < 1) {
-    // 全新数据库：SCHEMA 已包含 v2/v3/v4 的字段
+    // 全新数据库：SCHEMA 已包含 v2–v5 的字段
     db.exec(SCHEMA)
-    version = 4
+    version = 5
   }
   if (version < 2) {
     // v1 → v2：缓存供应商的模型列表
@@ -129,6 +131,14 @@ export function initRepo(dir: string): void {
       PRAGMA user_version = 4;
     `)
     version = 4
+  }
+  if (version < 5) {
+    // v4 → v5：保存 ReAct 工具调用步骤
+    db.exec(`
+      ALTER TABLE message ADD COLUMN steps_json TEXT NOT NULL DEFAULT '[]';
+      PRAGMA user_version = 5;
+    `)
+    version = 5
   }
 
   importLegacyJson(dir)
@@ -576,6 +586,7 @@ interface MessageRow {
   error: string | null
   sources_json: string | null
   queries_json: string | null
+  steps_json: string | null
   created_at: number
 }
 
@@ -604,6 +615,23 @@ function parseQueries(json: string | null): string[] | undefined {
   }
 }
 
+function parseSteps(json: string | null): ToolStep[] | undefined {
+  try {
+    const parsed = JSON.parse(json || '[]') as unknown
+    if (!Array.isArray(parsed)) return undefined
+    const steps = parsed.filter(
+      (step): step is ToolStep =>
+        Boolean(step) &&
+        typeof step === 'object' &&
+        typeof (step as ToolStep).id === 'string' &&
+        typeof (step as ToolStep).toolName === 'string'
+    )
+    return steps.length > 0 ? steps : undefined
+  } catch {
+    return undefined
+  }
+}
+
 function rowToMessage(row: MessageRow): Message {
   return {
     id: row.id,
@@ -616,6 +644,7 @@ function rowToMessage(row: MessageRow): Message {
     error: row.error ?? undefined,
     sources: parseSources(row.sources_json),
     searchQueries: parseQueries(row.queries_json),
+    steps: parseSteps(row.steps_json),
     createdAt: Number(row.created_at)
   }
 }
@@ -637,8 +666,8 @@ export function addMessage(message: Message): Message {
   tx(() => {
     d()
       .prepare(
-        `INSERT INTO message (id, conversation_id, author, bot_id, run_id, content, status, error, sources_json, queries_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO message (id, conversation_id, author, bot_id, run_id, content, status, error, sources_json, queries_json, steps_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         message.id,
@@ -651,6 +680,7 @@ export function addMessage(message: Message): Message {
         message.error ?? null,
         JSON.stringify(message.sources ?? []),
         JSON.stringify(message.searchQueries ?? []),
+        JSON.stringify(message.steps ?? []),
         message.createdAt
       )
     d().prepare('UPDATE conversation SET updated_at = ? WHERE id = ?').run(Date.now(), message.conversationId)
@@ -664,7 +694,7 @@ export function updateMessage(id: string, patch: Partial<Message>): Message | un
   const next = { ...message, ...patch }
   d()
     .prepare(
-      'UPDATE message SET content = ?, status = ?, error = ?, sources_json = ?, queries_json = ? WHERE id = ?'
+      'UPDATE message SET content = ?, status = ?, error = ?, sources_json = ?, queries_json = ?, steps_json = ? WHERE id = ?'
     )
     .run(
       next.content,
@@ -672,6 +702,7 @@ export function updateMessage(id: string, patch: Partial<Message>): Message | un
       next.error ?? null,
       JSON.stringify(next.sources ?? []),
       JSON.stringify(next.searchQueries ?? []),
+      JSON.stringify(next.steps ?? []),
       id
     )
   return next
