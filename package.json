@@ -11,7 +11,7 @@
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit",
     "check": "esbuild scripts/selfcheck.ts --bundle --platform=node --format=esm --packages=external --outfile=.tmp/selfcheck.mjs --log-level=warning && NODE_NO_WARNINGS=1 node .tmp/selfcheck.mjs",
-    "demo:react": "esbuild scripts/react-demo.ts --bundle --platform=node --format=esm --outfile=.tmp/react-demo.mjs --log-level=warning && NODE_NO_WARNINGS=1 node .tmp/react-demo.mjs",
+    "demo:react": "esbuild scripts/react-demo.ts --bundle --platform=node --format=esm --packages=external --outfile=.tmp/react-demo.mjs --log-level=warning && NODE_NO_WARNINGS=1 node .tmp/react-demo.mjs",
     "dist:mac": "electron-vite build && electron-builder --mac",
     "dist:win": "electron-vite build && electron-builder --win"
   },

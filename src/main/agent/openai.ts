@@ -1,97 +1,97 @@
-// OpenAI 兼容的 Chat Completions 客户端（非流式），带 function calling。
-// 生产版本可以换成流式实现，runReAct 的循环不用改。
+// AI SDK 版的一次模型调用：带工具声明，但不在这里执行工具。
+// runReAct 仍然负责循环和工具执行；以后可以直接换成 SDK 的 stopWhen 多步循环。
 
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
+import { generateText, jsonSchema, tool, type ModelMessage } from 'ai'
 import type { AgentMessage, AgentTool, AssistantReply, ChatFn, ToolCall } from './react'
-import { toOpenAiTools } from './react'
 
 export function createOpenAiChat(options: {
   baseUrl: string
   apiKey: string
   model: string
   temperature?: number
-  timeoutMs?: number
 }): ChatFn {
+  const provider = createOpenAICompatible({
+    name: 'mellio-agent',
+    baseURL: options.baseUrl,
+    apiKey: options.apiKey
+  })
+
   return async ({ messages, tools, signal }): Promise<AssistantReply> => {
-    const timeout = AbortSignal.timeout(options.timeoutMs ?? 120_000)
-    const combined = signal ? AbortSignal.any([signal, timeout]) : timeout
-    const body: Record<string, unknown> = {
-      model: options.model,
-      messages: messages.map(toWireMessage),
-      stream: false
-    }
-    if (tools.length > 0) {
-      body.tools = toOpenAiTools(tools)
-      body.tool_choice = 'auto'
-    }
-    if (options.temperature !== undefined) body.temperature = options.temperature
+    const instructions = messages
+      .filter(message => message.role === 'system')
+      .map(message => message.content)
+      .join('\n\n')
+    const conversation = messages.filter(message => message.role !== 'system')
 
-    const res = await fetch(`${options.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${options.apiKey}`
-      },
-      body: JSON.stringify(body),
-      signal: combined
+    const result = await generateText({
+      model: provider(options.model),
+      instructions: instructions || undefined,
+      messages: toModelMessages(conversation),
+      tools: Object.fromEntries(
+        tools.map(toolDef => [
+          toolDef.name,
+          tool({
+            description: toolDef.description,
+            inputSchema: jsonSchema(toolDef.parameters)
+          })
+        ])
+      ),
+      temperature: options.temperature,
+      abortSignal: signal
     })
-    if (!res.ok) {
-      const text = (await res.text().catch(() => '')).slice(0, 300)
-      throw new Error(`Provider returned HTTP ${res.status}${text ? `: ${text}` : ''}`)
-    }
 
-    const json = (await res.json()) as {
-      choices?: Array<{
-        message?: {
-          content?: unknown
-          tool_calls?: Array<{
-            id?: unknown
-            function?: { name?: unknown; arguments?: unknown }
-          }>
-        }
-      }>
-    }
-    const message = json.choices?.[0]?.message
-    const content = typeof message?.content === 'string' ? message.content : ''
-    const toolCalls: ToolCall[] = Array.isArray(message?.tool_calls)
-      ? message.tool_calls
-          .map(call => ({
-            id: typeof call.id === 'string' ? call.id : '',
-            name: typeof call.function?.name === 'string' ? call.function.name : '',
-            arguments:
-              typeof call.function?.arguments === 'string'
-                ? call.function.arguments
-                : JSON.stringify(call.function?.arguments ?? {})
-          }))
-          .filter(call => call.name.length > 0)
-      : []
+    const toolCalls: ToolCall[] = result.toolCalls.map(call => ({
+      id: call.toolCallId,
+      name: call.toolName,
+      arguments: JSON.stringify(call.input ?? {})
+    }))
 
-    return { content, toolCalls: toolCalls.length > 0 ? toolCalls : undefined }
+    return {
+      content: result.text,
+      toolCalls: toolCalls.length > 0 ? toolCalls : undefined
+    }
   }
 }
 
-function toWireMessage(message: AgentMessage): Record<string, unknown> {
-  if (message.role === 'tool') {
-    return {
-      role: 'tool',
-      tool_call_id: message.toolCallId,
-      name: message.name,
-      content: message.content
-    }
-  }
-  if (message.role === 'assistant') {
-    return {
-      role: 'assistant',
-      content: message.content || null,
-      ...(message.toolCalls?.length
-        ? {
-            tool_calls: message.toolCalls.map(call => ({
-              id: call.id,
-              type: 'function',
-              function: { name: call.name, arguments: call.arguments }
-            }))
+function toModelMessages(messages: AgentMessage[]): ModelMessage[] {
+  return messages.map(message => {
+    if (message.role === 'tool') {
+      return {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: message.toolCallId,
+            toolName: message.name,
+            output: { type: 'text', value: message.content }
           }
-        : {})
+        ]
+      }
     }
+
+    if (message.role === 'assistant') {
+      const content: Array<Record<string, unknown>> = []
+      if (message.content) content.push({ type: 'text', text: message.content })
+      for (const call of message.toolCalls ?? []) {
+        content.push({
+          type: 'tool-call',
+          toolCallId: call.id,
+          toolName: call.name,
+          input: parseArguments(call.arguments)
+        })
+      }
+      return { role: 'assistant', content: content.length > 0 ? content : '' }
+    }
+
+    return { role: message.role, content: message.content }
+  }) as ModelMessage[]
+}
+
+function parseArguments(raw: string): unknown {
+  try {
+    return raw.trim() ? (JSON.parse(raw) as unknown) : {}
+  } catch {
+    return {}
   }
-  return { role: message.role, content: message.content }
 }

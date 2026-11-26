@@ -53,6 +53,7 @@ async function* compatibleChat(params: ChatParams): AsyncGenerator<ChatChunk> {
     params.provider.type === 'deepseek' && isDeepSeekFlash(params.model)
       ? createSearchState()
       : undefined
+  const { instructions, messages } = splitSystemMessages(params.messages)
 
   const provider = createOpenAICompatible({
     name: params.provider.type === 'deepseek' ? 'deepseek' : 'openai-compatible',
@@ -64,7 +65,8 @@ async function* compatibleChat(params: ChatParams): AsyncGenerator<ChatChunk> {
 
   const result = streamText({
     model: provider(params.model),
-    messages: params.messages,
+    instructions,
+    messages,
     temperature: searchState ? undefined : params.temperature,
     abortSignal: params.signal
   })
@@ -113,10 +115,12 @@ async function* deepSeekResponsesChat(params: ChatParams): AsyncGenerator<ChatCh
     baseURL: params.provider.baseUrl || undefined
   })
   const state = createSearchState()
+  const { instructions, messages } = splitSystemMessages(params.messages)
 
   const result = streamText({
     model: deepseek.responses(params.model),
-    messages: params.messages,
+    instructions,
+    messages,
     tools: { web_search: deepseek.tools.webSearch() },
     abortSignal: params.signal
   })
@@ -155,6 +159,20 @@ async function* deepSeekResponsesChat(params: ChatParams): AsyncGenerator<ChatCh
     yield { sources: [...state.sources], queries: [...state.queries] }
   }
   if (usage) yield { usage }
+}
+
+function splitSystemMessages(messages: ChatMessage[]): {
+  instructions?: string
+  messages: ChatMessage[]
+} {
+  const instructions = messages
+    .filter(message => message.role === 'system')
+    .map(message => message.content)
+    .join('\n\n')
+  return {
+    instructions: instructions || undefined,
+    messages: messages.filter(message => message.role !== 'system')
+  }
 }
 
 function isDeepSeekPro(model: string): boolean {
