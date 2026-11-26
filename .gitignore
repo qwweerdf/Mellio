@@ -1,0 +1,7 @@
+node_modules/
+out/
+release/
+.tmp/
+.taste-skill/
+.DS_Store
+*.log

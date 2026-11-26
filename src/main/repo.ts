@@ -1,0 +1,727 @@
+// SQLite 存储层（Electron 内置 node:sqlite，零原生依赖）。
+// 旧版 data.json 在首次启动时自动导入并改名为 data.json.imported。
+
+import { DatabaseSync } from 'node:sqlite'
+import { existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs'
+import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { AVATAR_IDS, AVATAR_META } from '../../shared/avatars'
+import type {
+  Bot,
+  BotInput,
+  Conversation,
+  ConversationKind,
+  Message,
+  MessageStatus,
+  ProviderInput,
+  ProviderType,
+  ProviderView,
+  ReplyMode
+} from '../../shared/types'
+
+export interface StoredProvider {
+  id: string
+  name: string
+  type: ProviderType
+  baseUrl: string
+  keyEnc?: string
+  models: string[]
+}
+
+let db: DatabaseSync | null = null
+
+function d(): DatabaseSync {
+  if (!db) throw new Error('数据库尚未初始化')
+  return db
+}
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS provider (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'openai',
+  base_url TEXT NOT NULL DEFAULT '',
+  key_enc TEXT,
+  models_json TEXT NOT NULL DEFAULT '[]',
+  enabled INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS bot (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  avatar TEXT NOT NULL DEFAULT '',
+  emoji TEXT NOT NULL DEFAULT '🤖',
+  color TEXT NOT NULL DEFAULT '#F2B24B',
+  system_prompt TEXT NOT NULL DEFAULT '',
+  provider_id TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  temperature REAL NOT NULL DEFAULT 0.7,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS conversation (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'group',
+  reply_mode TEXT NOT NULL DEFAULT 'all',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS conversation_bot (
+  conversation_id TEXT NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
+  bot_id TEXT NOT NULL REFERENCES bot(id) ON DELETE CASCADE,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (conversation_id, bot_id)
+);
+
+CREATE TABLE IF NOT EXISTS message (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
+  author TEXT NOT NULL,
+  bot_id TEXT,
+  run_id TEXT,
+  content TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'done',
+  error TEXT,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_msg_conv ON message(conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_conv_bot ON conversation_bot(bot_id);
+
+PRAGMA user_version = 2;
+`
+
+export function initRepo(dir: string, opts: { seed?: boolean } = {}): void {
+  mkdirSync(dir, { recursive: true })
+  db = new DatabaseSync(join(dir, 'mellio.db'))
+  db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;')
+  const version = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version)
+  if (version < 1) {
+    db.exec(SCHEMA)
+  } else if (version < 2) {
+    // v1 → v2：缓存供应商的模型列表
+    db.exec(`
+      ALTER TABLE provider ADD COLUMN models_json TEXT NOT NULL DEFAULT '[]';
+      PRAGMA user_version = 2;
+    `)
+  }
+
+  const legacy = importLegacyJson(dir)
+  if (opts.seed !== false && legacy !== 'failed' && count('provider') === 0 && count('bot') === 0) {
+    seedDemo()
+  }
+  normalizeAvatars()
+}
+
+// 旧版 SVG 预设的头像 id → 15 个新头像
+const LEGACY_AVATAR_MAP: Record<string, string> = {
+  blob: 'fox-broad-forehead-right',
+  bot: 'corgi-3',
+  cat: 'hamster-alert-round-eyes-left',
+  ghost: 'sheep-3',
+  sprout: 'deer-2',
+  clover: 'fox-round-face-left',
+  fish: 'sea-otter-3',
+  bird: 'peach-eared-white-bunny'
+}
+
+function normalizeAvatars(): void {
+  const valid = new Set<string>(AVATAR_IDS)
+  const rows = d()
+    .prepare('SELECT id, avatar FROM bot ORDER BY created_at, rowid')
+    .all() as unknown as Array<{ id: string; avatar: string }>
+  const update = d().prepare('UPDATE bot SET avatar = ?, emoji = ?, color = ? WHERE id = ?')
+  rows.forEach((row, index) => {
+    if (valid.has(row.avatar)) return
+    const mapped = LEGACY_AVATAR_MAP[row.avatar] ?? AVATAR_IDS[index % AVATAR_IDS.length]
+    const meta = AVATAR_META[mapped]
+    update.run(mapped, meta?.emoji ?? '🤖', meta?.color ?? '#F2B24B', row.id)
+  })
+}
+
+export function closeRepo(): void {
+  if (!db) return
+  db.close()
+  db = null
+}
+
+function count(table: 'provider' | 'bot' | 'conversation' | 'message'): number {
+  const row = d().prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }
+  return Number(row.n)
+}
+
+function tx<T>(fn: () => T): T {
+  d().exec('BEGIN')
+  try {
+    const result = fn()
+    d().exec('COMMIT')
+    return result
+  } catch (err) {
+    d().exec('ROLLBACK')
+    throw err
+  }
+}
+
+// ---------- providers ----------
+
+interface ProviderRow {
+  id: string
+  name: string
+  type: string
+  base_url: string
+  key_enc: string | null
+  models_json: string | null
+}
+
+function parseModels(json: string | null): string[] {
+  try {
+    const parsed = JSON.parse(json || '[]') as unknown
+    return Array.isArray(parsed) ? parsed.filter((m): m is string => typeof m === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+function providerModels(row: ProviderRow): string[] {
+  return row.type === 'fake' ? ['demo'] : parseModels(row.models_json)
+}
+
+function rowToProviderView(p: ProviderRow): ProviderView {
+  return {
+    id: p.id,
+    name: p.name,
+    type: p.type as ProviderType,
+    baseUrl: p.base_url,
+    hasKey: Boolean(p.key_enc),
+    models: providerModels(p)
+  }
+}
+
+export function listProviders(): ProviderView[] {
+  return (d()
+    .prepare('SELECT * FROM provider ORDER BY rowid')
+    .all() as unknown as ProviderRow[]).map(rowToProviderView)
+}
+
+export function getProvider(id: string): StoredProvider | undefined {
+  const row = d().prepare('SELECT * FROM provider WHERE id = ?').get(id) as unknown as ProviderRow | undefined
+  if (!row) return undefined
+  return {
+    id: row.id,
+    name: row.name,
+    type: row.type as ProviderType,
+    baseUrl: row.base_url,
+    keyEnc: row.key_enc ?? undefined,
+    models: providerModels(row)
+  }
+}
+
+export function saveProvider(input: ProviderInput, keyEnc?: string): ProviderView {
+  const id = input.id || randomUUID()
+  const baseUrl = input.baseUrl.trim().replace(/\/+$/, '')
+  const existing = input.id ? getProvider(input.id) : undefined
+  d()
+    .prepare(
+      `INSERT INTO provider (id, name, type, base_url, key_enc, enabled)
+       VALUES (?, ?, ?, ?, ?, 1)
+       ON CONFLICT(id) DO UPDATE SET
+         name = excluded.name,
+         type = excluded.type,
+         base_url = excluded.base_url,
+         key_enc = COALESCE(excluded.key_enc, provider.key_enc)`
+    )
+    .run(
+      id,
+      input.name.trim() || '未命名服务商',
+      input.type,
+      baseUrl,
+      keyEnc ?? null
+    )
+  // Base URL 变了，旧的模型列表作废
+  if (existing && existing.baseUrl !== baseUrl) {
+    d().prepare("UPDATE provider SET models_json = '[]' WHERE id = ?").run(id)
+  }
+  const row = d().prepare('SELECT * FROM provider WHERE id = ?').get(id) as unknown as ProviderRow
+  return rowToProviderView(row)
+}
+
+export function setProviderModels(id: string, models: string[]): void {
+  d().prepare('UPDATE provider SET models_json = ? WHERE id = ?').run(JSON.stringify(models), id)
+}
+
+export function removeProvider(id: string): void {
+  d().prepare('DELETE FROM provider WHERE id = ?').run(id)
+}
+
+// ---------- bots ----------
+
+interface BotRow {
+  id: string
+  name: string
+  avatar: string
+  emoji: string
+  color: string
+  system_prompt: string
+  provider_id: string
+  model: string
+  temperature: number
+}
+
+function rowToBot(row: BotRow): Bot {
+  return {
+    id: row.id,
+    name: row.name,
+    avatar: row.avatar ?? '',
+    emoji: row.emoji,
+    color: row.color,
+    systemPrompt: row.system_prompt,
+    providerId: row.provider_id,
+    model: row.model,
+    temperature: Number(row.temperature)
+  }
+}
+
+export function listBots(): Bot[] {
+  return (d().prepare('SELECT * FROM bot ORDER BY created_at, rowid').all() as unknown as BotRow[]).map(rowToBot)
+}
+
+export function getBot(id: string): Bot | undefined {
+  const row = d().prepare('SELECT * FROM bot WHERE id = ?').get(id) as unknown as BotRow | undefined
+  return row ? rowToBot(row) : undefined
+}
+
+export function saveBot(input: BotInput): Bot {
+  const id = input.id || randomUUID()
+  const bot: Bot = {
+    id,
+    name: input.name.trim() || '新 Bot',
+    avatar: input.avatar || '',
+    emoji: (input.emoji || '🤖').slice(0, 4),
+    color: input.color || '#F2B24B',
+    systemPrompt: input.systemPrompt ?? '',
+    providerId: input.providerId,
+    model: input.model.trim(),
+    temperature: Math.min(2, Math.max(0, Number(input.temperature) || 0))
+  }
+  d()
+    .prepare(
+      `INSERT INTO bot (id, name, avatar, emoji, color, system_prompt, provider_id, model, temperature, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         name = excluded.name,
+         avatar = excluded.avatar,
+         emoji = excluded.emoji,
+         color = excluded.color,
+         system_prompt = excluded.system_prompt,
+         provider_id = excluded.provider_id,
+         model = excluded.model,
+         temperature = excluded.temperature`
+    )
+    .run(
+      bot.id,
+      bot.name,
+      bot.avatar,
+      bot.emoji,
+      bot.color,
+      bot.systemPrompt,
+      bot.providerId,
+      bot.model,
+      bot.temperature,
+      Date.now()
+    )
+  return bot
+}
+
+export function removeBot(id: string): void {
+  tx(() => {
+    d().prepare('DELETE FROM bot WHERE id = ?').run(id)
+    // 1:1 会话失去 Bot 后没有存在意义；群聊保留历史
+    d()
+      .prepare(
+        `DELETE FROM conversation
+         WHERE kind = 'dm'
+           AND id NOT IN (SELECT conversation_id FROM conversation_bot)`
+      )
+      .run()
+  })
+}
+
+// ---------- conversations ----------
+
+interface ConversationRow {
+  id: string
+  title: string
+  kind: string
+  reply_mode: string
+  created_at: number
+  updated_at: number
+}
+
+function participantIds(conversationId: string): string[] {
+  return (
+    d()
+      .prepare('SELECT bot_id FROM conversation_bot WHERE conversation_id = ? ORDER BY sort_order')
+      .all(conversationId) as unknown as Array<{ bot_id: string }>
+  ).map(r => r.bot_id)
+}
+
+function rowToConversation(row: ConversationRow): Conversation {
+  return {
+    id: row.id,
+    title: row.title,
+    botIds: participantIds(row.id),
+    kind: row.kind as ConversationKind,
+    replyMode: row.reply_mode as ReplyMode,
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at)
+  }
+}
+
+export function listConversations(): Conversation[] {
+  return (
+    d()
+      .prepare('SELECT * FROM conversation ORDER BY updated_at DESC, rowid DESC')
+      .all() as unknown as ConversationRow[]
+  ).map(rowToConversation)
+}
+
+export function getConversation(id: string): Conversation | undefined {
+  const row = d().prepare('SELECT * FROM conversation WHERE id = ?').get(id) as unknown as
+    | ConversationRow
+    | undefined
+  return row ? rowToConversation(row) : undefined
+}
+
+function insertParticipants(conversationId: string, botIds: string[]): void {
+  const stmt = d().prepare(
+    'INSERT OR IGNORE INTO conversation_bot (conversation_id, bot_id, sort_order) VALUES (?, ?, ?)'
+  )
+  botIds.forEach((botId, index) => stmt.run(conversationId, botId, index))
+}
+
+export function openBotChat(botId: string): Conversation {
+  const bot = getBot(botId)
+  if (!bot) throw new Error('Bot 不存在')
+
+  const existing = d()
+    .prepare(
+      `SELECT c.* FROM conversation c
+       JOIN conversation_bot cb ON cb.conversation_id = c.id
+       WHERE c.kind = 'dm' AND cb.bot_id = ?
+         AND (SELECT COUNT(*) FROM conversation_bot x WHERE x.conversation_id = c.id) = 1
+       ORDER BY c.updated_at DESC
+       LIMIT 1`
+    )
+    .get(botId) as unknown as ConversationRow | undefined
+
+  if (existing) return rowToConversation(existing)
+
+  const now = Date.now()
+  const id = randomUUID()
+  tx(() => {
+    d()
+      .prepare(
+        `INSERT INTO conversation (id, title, kind, reply_mode, created_at, updated_at)
+         VALUES (?, ?, 'dm', 'all', ?, ?)`
+      )
+      .run(id, bot.name, now, now)
+    insertParticipants(id, [botId])
+  })
+  return getConversation(id) as Conversation
+}
+
+export function createGroup(title: string, botIds: string[]): Conversation {
+  const unique = [...new Set(botIds)].filter(id => Boolean(getBot(id)))
+  if (unique.length < 2) throw new Error('群聊至少需要 2 个 Bot')
+
+  const names = unique.map(id => getBot(id)?.name).filter(Boolean) as string[]
+  const finalTitle = title.trim() || names.slice(0, 3).join('、') || '新群聊'
+  const now = Date.now()
+  const id = randomUUID()
+
+  tx(() => {
+    d()
+      .prepare(
+        `INSERT INTO conversation (id, title, kind, reply_mode, created_at, updated_at)
+         VALUES (?, ?, 'group', 'all', ?, ?)`
+      )
+      .run(id, finalTitle, now, now)
+    insertParticipants(id, unique)
+  })
+  return getConversation(id) as Conversation
+}
+
+export function setGroupMembers(conversationId: string, botIds: string[]): void {
+  const conversation = getConversation(conversationId)
+  if (!conversation) throw new Error('会话不存在')
+  if (conversation.kind !== 'group') throw new Error('只有群聊可以修改成员')
+
+  const unique = [...new Set(botIds)].filter(id => Boolean(getBot(id)))
+  if (unique.length < 2) throw new Error('群聊至少需要 2 个 Bot')
+
+  tx(() => {
+    d().prepare('DELETE FROM conversation_bot WHERE conversation_id = ?').run(conversationId)
+    insertParticipants(conversationId, unique)
+    d().prepare('UPDATE conversation SET updated_at = ? WHERE id = ?').run(Date.now(), conversationId)
+  })
+}
+
+export function setReplyMode(conversationId: string, mode: ReplyMode): void {
+  d()
+    .prepare('UPDATE conversation SET reply_mode = ? WHERE id = ?')
+    .run(mode === 'mention' ? 'mention' : 'all', conversationId)
+}
+
+// ---------- messages ----------
+
+interface MessageRow {
+  id: string
+  conversation_id: string
+  author: string
+  bot_id: string | null
+  run_id: string | null
+  content: string
+  status: string
+  error: string | null
+  created_at: number
+}
+
+function rowToMessage(row: MessageRow): Message {
+  return {
+    id: row.id,
+    conversationId: row.conversation_id,
+    author: row.author as 'user' | 'bot',
+    botId: row.bot_id ?? undefined,
+    runId: row.run_id ?? undefined,
+    content: row.content,
+    status: row.status as MessageStatus,
+    error: row.error ?? undefined,
+    createdAt: Number(row.created_at)
+  }
+}
+
+export function listMessages(conversationId: string): Message[] {
+  return (
+    d()
+      .prepare('SELECT * FROM message WHERE conversation_id = ? ORDER BY created_at, rowid')
+      .all(conversationId) as unknown as MessageRow[]
+  ).map(rowToMessage)
+}
+
+export function getMessage(id: string): Message | undefined {
+  const row = d().prepare('SELECT * FROM message WHERE id = ?').get(id) as unknown as MessageRow | undefined
+  return row ? rowToMessage(row) : undefined
+}
+
+export function addMessage(message: Message): Message {
+  tx(() => {
+    d()
+      .prepare(
+        `INSERT INTO message (id, conversation_id, author, bot_id, run_id, content, status, error, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        message.id,
+        message.conversationId,
+        message.author,
+        message.botId ?? null,
+        message.runId ?? null,
+        message.content,
+        message.status,
+        message.error ?? null,
+        message.createdAt
+      )
+    d().prepare('UPDATE conversation SET updated_at = ? WHERE id = ?').run(Date.now(), message.conversationId)
+  })
+  return message
+}
+
+export function updateMessage(id: string, patch: Partial<Message>): Message | undefined {
+  const message = getMessage(id)
+  if (!message) return undefined
+  const next = { ...message, ...patch }
+  d()
+    .prepare('UPDATE message SET content = ?, status = ?, error = ? WHERE id = ?')
+    .run(next.content, next.status, next.error ?? null, id)
+  return next
+}
+
+export function recentMessages(conversationId: string, limit: number): Message[] {
+  return (
+    d()
+      .prepare(
+        `SELECT * FROM (
+           SELECT rowid AS rid, * FROM message
+           WHERE conversation_id = ? AND status IN ('done', 'cancelled')
+           ORDER BY created_at DESC, rowid DESC
+           LIMIT ?
+         ) ORDER BY created_at, rid`
+      )
+      .all(conversationId, limit) as unknown as MessageRow[]
+  ).map(rowToMessage)
+}
+
+// ---------- seed / legacy import ----------
+
+function seedDemo(): void {
+  const now = Date.now()
+  tx(() => {
+    d()
+      .prepare(
+        `INSERT INTO provider (id, name, type, base_url, key_enc, enabled)
+         VALUES ('demo-provider', '离线演示', 'fake', '', NULL, 1)`
+      )
+      .run()
+    d()
+      .prepare(
+        `INSERT INTO bot (id, name, avatar, emoji, color, system_prompt, provider_id, model, temperature, created_at)
+         VALUES ('demo-bot', '梅梅', 'golden-retriever', '🐕', '#1F3B2B', ?, 'demo-provider', 'demo', 0.7, ?)`
+      )
+      .run('你是 Mellio 的离线演示助手，用中文简洁友好地回答。', now)
+    d()
+      .prepare(
+        `INSERT INTO conversation (id, title, kind, reply_mode, created_at, updated_at)
+         VALUES ('demo-conversation', '梅梅', 'dm', 'all', ?, ?)`
+      )
+      .run(now, now)
+    insertParticipants('demo-conversation', ['demo-bot'])
+  })
+}
+
+interface LegacyData {
+  providers?: Array<{
+    id: string
+    name: string
+    type?: string
+    baseUrl?: string
+    keyEnc?: string
+  }>
+  bots?: Array<{
+    id: string
+    name: string
+    emoji?: string
+    color?: string
+    systemPrompt?: string
+    providerId?: string
+    model?: string
+    temperature?: number
+  }>
+  conversations?: Array<{ id: string; title: string; botIds?: string[]; createdAt?: number }>
+  messages?: Array<{
+    id: string
+    conversationId: string
+    author?: string
+    botId?: string
+    runId?: string
+    content?: string
+    status?: string
+    error?: string
+    createdAt?: number
+  }>
+}
+
+function importLegacyJson(dir: string): 'none' | 'ok' | 'failed' {
+  if (count('provider') > 0 || count('bot') > 0) return 'none'
+  const file = join(dir, 'data.json')
+  if (!existsSync(file)) return 'none'
+
+  let data: LegacyData
+  try {
+    data = JSON.parse(readFileSync(file, 'utf8')) as LegacyData
+  } catch (err) {
+    console.error('旧数据读取失败', err)
+    return 'failed'
+  }
+
+  try {
+    tx(() => {
+      const insertProvider = d().prepare(
+        `INSERT OR IGNORE INTO provider (id, name, type, base_url, key_enc, enabled)
+         VALUES (?, ?, ?, ?, ?, 1)`
+      )
+      for (const provider of data.providers ?? []) {
+        insertProvider.run(
+          provider.id,
+          provider.name,
+          provider.type === 'fake' ? 'fake' : 'openai',
+          provider.baseUrl ?? '',
+          provider.keyEnc ?? null
+        )
+      }
+
+      const insertBot = d().prepare(
+        `INSERT OR IGNORE INTO bot
+           (id, name, avatar, emoji, color, system_prompt, provider_id, model, temperature, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      ;(data.bots ?? []).forEach((bot, index) => {
+        insertBot.run(
+          bot.id,
+          bot.name,
+          AVATAR_IDS[index % AVATAR_IDS.length],
+          bot.emoji ?? '🤖',
+          bot.color ?? '#F2B24B',
+          bot.systemPrompt ?? '',
+          bot.providerId ?? '',
+          bot.model ?? '',
+          Number(bot.temperature) || 0.7,
+          Date.now() + index
+        )
+      })
+
+      const insertConversation = d().prepare(
+        `INSERT OR IGNORE INTO conversation (id, title, kind, reply_mode, created_at, updated_at)
+         VALUES (?, ?, ?, 'all', ?, ?)`
+      )
+      const knownBots = new Set(
+        (d().prepare('SELECT id FROM bot').all() as unknown as Array<{ id: string }>).map(r => r.id)
+      )
+      const importedConversations = new Set<string>()
+      // 旧版本点“新建会话”会留下没有消息的空草稿，导入时跳过
+      const withMessages = new Set((data.messages ?? []).map(m => m.conversationId))
+
+      for (const conversation of data.conversations ?? []) {
+        if (!withMessages.has(conversation.id)) continue
+        const botIds = [...new Set(conversation.botIds ?? [])].filter(id => knownBots.has(id))
+        if (botIds.length === 0) continue
+        const createdAt = Number(conversation.createdAt) || Date.now()
+        insertConversation.run(
+          conversation.id,
+          conversation.title,
+          botIds.length > 1 ? 'group' : 'dm',
+          createdAt,
+          createdAt
+        )
+        insertParticipants(conversation.id, botIds)
+        importedConversations.add(conversation.id)
+      }
+
+      const insertMessage = d().prepare(
+        `INSERT OR IGNORE INTO message
+           (id, conversation_id, author, bot_id, run_id, content, status, error, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      for (const message of data.messages ?? []) {
+        if (!importedConversations.has(message.conversationId)) continue
+        insertMessage.run(
+          message.id,
+          message.conversationId,
+          message.author === 'user' ? 'user' : 'bot',
+          message.botId ?? null,
+          message.runId ?? null,
+          message.content ?? '',
+          message.status ?? 'done',
+          message.error ?? null,
+          Number(message.createdAt) || Date.now()
+        )
+      }
+    })
+    renameSync(file, `${file}.imported`)
+    return 'ok'
+  } catch (err) {
+    console.error('旧数据导入失败，保留 data.json 未改动', err)
+    return 'failed'
+  }
+}
