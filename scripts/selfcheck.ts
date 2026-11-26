@@ -69,7 +69,7 @@ async function testLegacyImport(): Promise<void> {
     })
   )
 
-  repo.initRepo(dir, { seed: false })
+  repo.initRepo(dir)
   const bots = repo.listBots()
   assert.equal(bots.length, 1)
   assert.ok(bots[0].avatar, '旧 Bot 自动分配预设头像')
@@ -84,7 +84,7 @@ async function testLegacyImport(): Promise<void> {
 
 async function testReplyModes(): Promise<void> {
   const dir = makeDir()
-  repo.initRepo(dir, { seed: false })
+  repo.initRepo(dir)
   const provider = repo.saveProvider({ name: 'fake', type: 'fake', baseUrl: '' })
   const a = repo.saveBot({
     name: '阿码',
@@ -151,7 +151,7 @@ async function testReplyModes(): Promise<void> {
 
 async function testCancel(): Promise<void> {
   const dir = makeDir()
-  repo.initRepo(dir, { seed: false })
+  repo.initRepo(dir)
   const provider = repo.saveProvider({ name: 'fake', type: 'fake', baseUrl: '' })
   const slow = repo.saveBot({
     name: '慢速',

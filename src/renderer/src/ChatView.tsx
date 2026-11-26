@@ -4,6 +4,7 @@ import type { Bot, Conversation, Message, ReplyMode } from '../../../shared/type
 import { BotAvatar, GroupAvatar } from './Avatar'
 import { gsap, prefersReducedMotion, revealSafety, useGSAP } from './motion'
 import { useStore } from './store'
+import { useT } from './useT'
 
 const EMPTY: Message[] = []
 
@@ -13,6 +14,7 @@ export function ChatView({ conversation }: { conversation: Conversation }) {
   const openBotEditor = useStore(s => s.openBotEditor)
   const openGroupMembers = useStore(s => s.openGroupMembers)
   const setReplyMode = useStore(s => s.setReplyMode)
+  const { t } = useT()
   const root = useRef<HTMLDivElement>(null)
 
   const participants = conversation.botIds
@@ -52,12 +54,15 @@ export function ChatView({ conversation }: { conversation: Conversation }) {
             </h1>
             <p className="conv-sub">
               {isGroup
-                ? `${participants.length} 个 Bot · ${
-                    conversation.replyMode === 'mention' ? '只有 @ 才回复' : '每条消息都回复'
-                  }`
+                ? t(
+                    conversation.replyMode === 'mention'
+                      ? 'chat.groupMetaMention'
+                      : 'chat.groupMetaAll',
+                    { count: participants.length }
+                  )
                 : dmBot
-                  ? '记录在本机'
-                  : 'Bot 已被删除'}
+                  ? t('chat.dmSub')
+                  : t('chat.deletedBot')}
             </p>
           </div>
         </div>
@@ -70,9 +75,9 @@ export function ChatView({ conversation }: { conversation: Conversation }) {
             <button
               className="btn btn-secondary btn-sm"
               onClick={() => openGroupMembers(conversation.id)}
-              title="管理群成员"
+              title={t('chat.membersTitle')}
             >
-              成员
+              {t('chat.members')}
             </button>
           ) : dmBot ? (
             <>
@@ -80,8 +85,8 @@ export function ChatView({ conversation }: { conversation: Conversation }) {
               <button
                 className="icon-btn"
                 onClick={() => openBotEditor(dmBot.id)}
-                aria-label="编辑 Bot"
-                title="编辑 Bot"
+                aria-label={t('chat.editBot')}
+                title={t('chat.editBot')}
               >
                 <IconPencil />
               </button>
@@ -109,26 +114,27 @@ function ReplyModeToggle({
   mode: ReplyMode
   onChange: (mode: ReplyMode) => void
 }) {
+  const { t } = useT()
   return (
     <div
       className={`mode-toggle ${mode === 'all' ? 'mode-all' : 'mode-mention'}`}
       role="group"
-      aria-label="群聊回复模式"
+      aria-label={t('chat.modeGroupAria')}
     >
       <span className="mode-thumb" aria-hidden="true" />
       <button
         aria-pressed={mode === 'mention'}
         onClick={() => onChange('mention')}
-        title="只有被 @ 的 Bot 会回复"
+        title={t('chat.modeMentionTitle')}
       >
-        @ 回复
+        {t('app.modeMention')}
       </button>
       <button
         aria-pressed={mode === 'all'}
         onClick={() => onChange('all')}
-        title="每条消息所有 Bot 都会回复"
+        title={t('chat.modeAllTitle')}
       >
-        全部回复
+        {t('app.modeAll')}
       </button>
     </div>
   )
@@ -141,6 +147,7 @@ function ModelPicker({ bot }: { bot: Bot }) {
   const [providerId, setProviderId] = useState(bot.providerId)
   const [model, setModel] = useState(bot.model)
   const root = useRef<HTMLDivElement>(null)
+  const { t } = useT()
 
   useEffect(() => {
     if (!open) return
@@ -180,17 +187,17 @@ function ModelPicker({ bot }: { bot: Bot }) {
         onClick={() => setOpen(value => !value)}
         aria-expanded={open}
         aria-haspopup="dialog"
-        title="切换服务商和模型"
+        title={t('chat.pickerTitle')}
       >
-        <span className="model-picker-provider">{provider?.name ?? '未选服务商'}</span>
-        <span className="model-picker-model">{bot.model || '选择模型'}</span>
+        <span className="model-picker-provider">{provider?.name ?? t('chat.noProviderSelected')}</span>
+        <span className="model-picker-model">{bot.model || t('chat.selectModel')}</span>
         <IconChevron open={open} />
       </button>
 
       {open && (
-        <div className="model-pop" role="dialog" aria-label="切换服务商和模型">
+        <div className="model-pop" role="dialog" aria-label={t('chat.pickerTitle')}>
           <label className="field">
-            <span className="field-label">服务商</span>
+            <span className="field-label">{t('chat.provider')}</span>
             {providers.length > 0 ? (
               <select
                 className="select"
@@ -198,7 +205,7 @@ function ModelPicker({ bot }: { bot: Bot }) {
                 onChange={event => setProviderId(event.target.value)}
               >
                 {!providers.some(p => p.id === providerId) && (
-                  <option value={providerId}>{provider?.name ?? '选择服务商'}</option>
+                  <option value={providerId}>{provider?.name ?? t('chat.noProviderSelected')}</option>
                 )}
                 {providers.map(p => (
                   <option key={p.id} value={p.id}>
@@ -207,15 +214,17 @@ function ModelPicker({ bot }: { bot: Bot }) {
                 ))}
               </select>
             ) : (
-              <p className="hint">还没有服务商，先去设置里添加。</p>
+              <p className="hint">{t('chat.noProviders')}</p>
             )}
           </label>
 
           <label className="field">
             <span className="field-label">
-              模型
+{t('chat.model')}
               {selectedProvider && selectedProvider.models.length > 0 && (
-                <span className="field-hint">{selectedProvider.models.length} 个可选</span>
+                <span className="field-hint">
+                  {t('chat.modelCount', { count: selectedProvider.models.length })}
+                </span>
               )}
             </span>
             <input
@@ -224,8 +233,8 @@ function ModelPicker({ bot }: { bot: Bot }) {
               onChange={event => setModel(event.target.value)}
               placeholder={
                 selectedProvider && selectedProvider.models.length > 0
-                  ? '选择或输入模型…'
-                  : 'deepseek-chat / grok-4'
+                  ? t('chat.modelPlaceholder')
+                  : t('chat.modelFreePlaceholder')
               }
               list="picker-model-options"
               autoFocus
@@ -245,14 +254,14 @@ function ModelPicker({ bot }: { bot: Bot }) {
 
           <div className="model-pop-actions">
             <button className="btn btn-secondary btn-sm" onClick={() => setOpen(false)}>
-              取消
+              {t('chat.cancel')}
             </button>
             <button
               className="btn btn-primary btn-sm"
               onClick={() => void save()}
               disabled={!providerId || !model.trim() || providers.length === 0}
             >
-              保存
+              {t('chat.save')}
             </button>
           </div>
         </div>
@@ -273,6 +282,7 @@ function MessageStream({
   participantCount: number
 }) {
   const ref = useRef<HTMLDivElement>(null)
+  const { t } = useT()
   const last = timeline.length ? timeline[timeline.length - 1] : null
 
   useEffect(() => {
@@ -286,10 +296,10 @@ function MessageStream({
         {timeline.length === 0 && (
           <p className="stream-empty">
             {participantCount > 1
-              ? '说点什么，Bot 们会同时回复。'
+              ? t('chat.streamEmptyMulti')
               : participantCount === 1
-                ? '说点什么，Bot 会回复。'
-                : '这个会话还没有 Bot。'}
+                ? t('chat.streamEmptySingle')
+                : t('chat.streamEmptyNone')}
           </p>
         )}
         {timeline.map(message =>
@@ -318,6 +328,7 @@ function UserMessage({ message }: { message: Message }) {
 
 function BotMessage({ message, bot }: { message: Message; bot?: Bot }) {
   const cancel = useStore(s => s.cancel)
+  const { t, te } = useT()
   const [copied, setCopied] = useState(false)
   const streaming = message.status === 'streaming'
 
@@ -342,14 +353,14 @@ function BotMessage({ message, bot }: { message: Message; bot?: Bot }) {
             <button
               className="link link--muted msg-copy"
               onClick={() => void copy()}
-              title="复制这条回复"
+              title={t('chat.copyTitle')}
             >
-              {copied ? '已复制' : '复制'}
+              {copied ? t('chat.copied') : t('chat.copy')}
             </button>
           )}
           {streaming && (
             <button className="link link--muted msg-stop" onClick={() => void cancel(message)}>
-              停止
+              {t('chat.stop')}
             </button>
           )}
         </div>
@@ -359,15 +370,15 @@ function BotMessage({ message, bot }: { message: Message; bot?: Bot }) {
             <ReactMarkdown>{message.content}</ReactMarkdown>
           </div>
         ) : message.status === 'queued' ? (
-          <p className="msg-status">排队中…</p>
+          <p className="msg-status">{t('chat.queued')}</p>
         ) : message.status === 'streaming' ? (
-          <p className="msg-status">正在回复…</p>
+          <p className="msg-status">{t('chat.streaming')}</p>
         ) : null}
 
         {message.status === 'error' && (
-          <p className="msg-error">{message.error ?? '出错了，检查一下服务商配置。'}</p>
+          <p className="msg-error">{message.error ? te(message.error) : t('chat.errorFallback')}</p>
         )}
-        {message.status === 'cancelled' && <p className="msg-note">已停止</p>}
+        {message.status === 'cancelled' && <p className="msg-note">{t('chat.cancelled')}</p>}
       </div>
     </div>
   )
@@ -395,6 +406,7 @@ function Composer({
   const [highlight, setHighlight] = useState(0)
   const ta = useRef<HTMLTextAreaElement>(null)
   const composerRef = useRef<HTMLDivElement>(null)
+  const { t } = useT()
   const send = useStore(s => s.send)
   const busy = useStore(s =>
     (s.messages[conversation.id] ?? EMPTY).some(
@@ -463,28 +475,28 @@ function Composer({
   }
 
   const hint = busy
-    ? '正在回复…'
+    ? t('chat.streaming')
     : isGroup
       ? conversation.replyMode === 'mention'
         ? mentioned.length > 0
-          ? `将回复：${mentioned.map(bot => bot.name).join('、')}`
-          : '只有 @ 的 Bot 会回复'
-        : `${participants.length} 个 Bot 会同时回复`
-      : 'Enter 发送 · Shift+Enter 换行'
+          ? t('chat.replyTo', { names: mentioned.map(bot => bot.name).join(', ') })
+          : t('chat.mentionOnly')
+        : t('chat.allReply', { count: participants.length })
+      : t('chat.enterHint')
 
   const placeholder = !participants.length
-    ? '这个会话还没有 Bot…'
+    ? t('chat.noBotsPlaceholder')
     : isGroup
       ? conversation.replyMode === 'mention'
-        ? '输入 @ 点名，或用 @ 按钮选择 Bot…'
-        : `发消息给 ${participants.length} 个 Bot…`
-      : '说点什么…'
+        ? t('chat.mentionPlaceholder')
+        : t('chat.groupPlaceholder', { count: participants.length })
+      : t('chat.dmPlaceholder')
 
   return (
     <div className="composer-wrap">
       <div className="composer" ref={composerRef}>
         {mention && filtered.length > 0 && (
-          <div className="mention-pop" role="listbox" aria-label="选择要 @ 的 Bot">
+          <div className="mention-pop" role="listbox" aria-label={t('chat.mentionListAria')}>
             {filtered.map((bot, index) => (
               <button
                 key={bot.id}
@@ -550,7 +562,7 @@ function Composer({
           }}
           rows={1}
           placeholder={placeholder}
-          aria-label="消息内容"
+          aria-label={t('chat.messageAria')}
         />
 
         <div className="composer-bar">
@@ -559,8 +571,8 @@ function Composer({
               <button
                 className="mention-btn"
                 onClick={triggerMention}
-                aria-label="提到 Bot"
-                title="提到 Bot"
+                aria-label={t('chat.mentionAria')}
+                title={t('chat.mentionAria')}
               >
                 @
               </button>
@@ -568,7 +580,7 @@ function Composer({
             <span className="composer-hint">{hint}</span>
           </div>
           <button className="btn btn-primary btn-send" onClick={submit} disabled={!canSend}>
-            发送
+            {t('chat.send')}
           </button>
         </div>
       </div>

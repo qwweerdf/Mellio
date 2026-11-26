@@ -1,4 +1,14 @@
-import { app, BrowserWindow, clipboard, ipcMain, nativeTheme, session, shell } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  ipcMain,
+  Menu,
+  nativeTheme,
+  session,
+  shell,
+  type MenuItemConstructorOptions
+} from 'electron'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { BotInput, ProviderInput, RunEvent, SendInput } from '../../shared/types'
@@ -7,7 +17,69 @@ import { decryptKey, encryptKey } from './secrets'
 import { listModels, testConnection } from './llm'
 import { cancelRun, respond } from './orchestrator'
 
+app.setName('Mellio')
+app.setAppUserModelId('com.mellio.app')
+
 let win: BrowserWindow | null = null
+
+function buildMenu(): void {
+  const isMac = process.platform === 'darwin'
+  const template: MenuItemConstructorOptions[] = [
+    ...(isMac
+      ? [
+          {
+            label: app.name,
+            submenu: [
+              { role: 'about' },
+              { type: 'separator' },
+              { role: 'services' },
+              { type: 'separator' },
+              { role: 'hide' },
+              { role: 'hideOthers' },
+              { role: 'unhide' },
+              { type: 'separator' },
+              { role: 'quit' }
+            ]
+          } as MenuItemConstructorOptions
+        ]
+      : []),
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'selectAll' }
+      ]
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' },
+        { role: 'forceReload' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' }
+      ]
+    },
+    {
+      label: 'Window',
+      submenu: [
+        { role: 'minimize' },
+        { role: 'zoom' },
+        ...(isMac ? [{ type: 'separator' as const }, { role: 'front' as const }] : [{ role: 'close' as const }])
+      ]
+    }
+  ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
 
 function createWindow(): void {
   const devIcon = app.isPackaged ? undefined : join(app.getAppPath(), 'build/icon.png')
@@ -38,7 +110,11 @@ function createWindow(): void {
     if (url.startsWith('https://')) void shell.openExternal(url)
     return { action: 'deny' }
   })
-  win.webContents.on('will-navigate', event => event.preventDefault())
+  win.webContents.on('will-navigate', (event, url) => {
+    const devUrl = process.env.ELECTRON_RENDERER_URL
+    const allowed = devUrl ? url.startsWith(devUrl) : url.startsWith('file://')
+    if (!allowed) event.preventDefault()
+  })
 
   if (process.env.ELECTRON_RENDERER_URL) {
     void win.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -121,6 +197,10 @@ function registerIpc(): void {
 
 app.whenReady().then(() => {
   nativeTheme.themeSource = 'dark'
+  app.setAboutPanelOptions({
+    applicationName: 'Mellio',
+    applicationVersion: app.getVersion()
+  })
   if (process.platform === 'darwin' && !app.isPackaged) {
     const devIcon = join(app.getAppPath(), 'build/icon.png')
     if (existsSync(devIcon)) app.dock?.setIcon(devIcon)
@@ -143,6 +223,7 @@ app.whenReady().then(() => {
   }
 
   registerIpc()
+  buildMenu()
   createWindow()
 
   app.on('activate', () => {

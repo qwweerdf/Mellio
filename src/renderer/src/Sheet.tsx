@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ReactNode } from 'react'
-import { gsap, prefersReducedMotion, useGSAP } from './motion'
+import { gsap, prefersReducedMotion, revealSafety, useGSAP } from './motion'
+import { useT } from './useT'
 
 interface SheetProps {
   open: boolean
@@ -11,12 +12,14 @@ interface SheetProps {
 
 export function Sheet({ open, title, onClose, width = 560, children }: SheetProps) {
   const ref = useRef<HTMLDivElement>(null)
+  const { t } = useT()
 
   useGSAP(
     () => {
       if (!open || prefersReducedMotion()) return
       gsap.from('.scrim-bg', { autoAlpha: 0, duration: 0.15, ease: 'power2.out' })
       gsap.from('.sheet', { autoAlpha: 0, y: 10, scale: 0.985, duration: 0.2, ease: 'expo.out' })
+      return revealSafety(ref.current, '.sheet, .scrim-bg', 1000)
     },
     { scope: ref, dependencies: [open] }
   )
@@ -47,7 +50,7 @@ export function Sheet({ open, title, onClose, width = 560, children }: SheetProp
           <h2 className="sheet-title" id="sheet-title">
             {title}
           </h2>
-          <button className="icon-btn" type="button" onClick={onClose} aria-label="关闭">
+          <button className="icon-btn" type="button" onClick={onClose} aria-label={t('sheet.close')}>
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
               <path d="M6 6l12 12M18 6L6 18" />
             </svg>

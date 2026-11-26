@@ -1,6 +1,7 @@
 node_modules/
 out/
-release/
+release/*
+!release/README.md
 .tmp/
 .taste-skill/
 .DS_Store

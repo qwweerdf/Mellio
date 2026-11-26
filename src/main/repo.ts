@@ -93,7 +93,7 @@ CREATE INDEX IF NOT EXISTS idx_conv_bot ON conversation_bot(bot_id);
 PRAGMA user_version = 2;
 `
 
-export function initRepo(dir: string, opts: { seed?: boolean } = {}): void {
+export function initRepo(dir: string): void {
   mkdirSync(dir, { recursive: true })
   db = new DatabaseSync(join(dir, 'mellio.db'))
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;')
@@ -108,11 +108,49 @@ export function initRepo(dir: string, opts: { seed?: boolean } = {}): void {
     `)
   }
 
-  const legacy = importLegacyJson(dir)
-  if (opts.seed !== false && legacy !== 'failed' && count('provider') === 0 && count('bot') === 0) {
-    seedDemo()
-  }
+  importLegacyJson(dir)
+  removeDemoData()
   normalizeAvatars()
+}
+
+// 早期版本内置的离线演示已移除：清理演示 Provider、Bot 及其 DM 会话
+function removeDemoData(): void {
+  const hasDemo = d()
+    .prepare(
+      `SELECT 1 FROM provider WHERE id = 'demo-provider'
+       UNION SELECT 1 FROM bot WHERE provider_id = 'demo-provider'
+       LIMIT 1`
+    )
+    .get()
+  if (!hasDemo) return
+
+  tx(() => {
+    d()
+      .prepare(
+        `DELETE FROM message
+         WHERE bot_id IN (SELECT id FROM bot WHERE provider_id = 'demo-provider')`
+      )
+      .run()
+    d()
+      .prepare(
+        `DELETE FROM conversation
+         WHERE kind = 'dm'
+           AND id IN (
+             SELECT conversation_id FROM conversation_bot
+             WHERE bot_id IN (SELECT id FROM bot WHERE provider_id = 'demo-provider')
+           )`
+      )
+      .run()
+    d().prepare(`DELETE FROM bot WHERE provider_id = 'demo-provider'`).run()
+    d()
+      .prepare(
+        `DELETE FROM conversation
+         WHERE kind = 'dm'
+           AND id NOT IN (SELECT conversation_id FROM conversation_bot)`
+      )
+      .run()
+    d().prepare(`DELETE FROM provider WHERE id = 'demo-provider'`).run()
+  })
 }
 
 // 旧版 SVG 预设的头像 id → 15 个新头像
@@ -367,13 +405,28 @@ function participantIds(conversationId: string): string[] {
   ).map(r => r.bot_id)
 }
 
+function latestMessage(conversationId: string): { content: string; at: number } | undefined {
+  const row = d()
+    .prepare(
+      `SELECT content, created_at FROM message
+       WHERE conversation_id = ? AND content <> ''
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT 1`
+    )
+    .get(conversationId) as { content: string; created_at: number } | undefined
+  return row ? { content: row.content, at: Number(row.created_at) } : undefined
+}
+
 function rowToConversation(row: ConversationRow): Conversation {
+  const latest = latestMessage(row.id)
   return {
     id: row.id,
     title: row.title,
     botIds: participantIds(row.id),
     kind: row.kind as ConversationKind,
     replyMode: row.reply_mode as ReplyMode,
+    lastMessage: latest?.content,
+    lastMessageAt: latest?.at,
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at)
   }
@@ -563,32 +616,7 @@ export function recentMessages(conversationId: string, limit: number): Message[]
   ).map(rowToMessage)
 }
 
-// ---------- seed / legacy import ----------
-
-function seedDemo(): void {
-  const now = Date.now()
-  tx(() => {
-    d()
-      .prepare(
-        `INSERT INTO provider (id, name, type, base_url, key_enc, enabled)
-         VALUES ('demo-provider', '离线演示', 'fake', '', NULL, 1)`
-      )
-      .run()
-    d()
-      .prepare(
-        `INSERT INTO bot (id, name, avatar, emoji, color, system_prompt, provider_id, model, temperature, created_at)
-         VALUES ('demo-bot', '梅梅', 'golden-retriever', '🐕', '#1F3B2B', ?, 'demo-provider', 'demo', 0.7, ?)`
-      )
-      .run('你是 Mellio 的离线演示助手，用中文简洁友好地回答。', now)
-    d()
-      .prepare(
-        `INSERT INTO conversation (id, title, kind, reply_mode, created_at, updated_at)
-         VALUES ('demo-conversation', '梅梅', 'dm', 'all', ?, ?)`
-      )
-      .run(now, now)
-    insertParticipants('demo-conversation', ['demo-bot'])
-  })
-}
+// ---------- legacy import ----------
 
 interface LegacyData {
   providers?: Array<{

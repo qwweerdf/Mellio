@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import type { ProviderView } from '../../../shared/types'
+import type { Lang } from './i18n'
 import { Sheet } from './Sheet'
 import { errText, useStore } from './store'
+import { useT } from './useT'
 
 const blank = () => ({ id: '', name: '', baseUrl: '', apiKey: '' })
 
@@ -16,6 +18,8 @@ export function SettingsModal() {
   const testProvider = useStore(s => s.testProvider)
   const fetchModels = useStore(s => s.fetchModels)
   const showToast = useStore(s => s.showToast)
+  const setLang = useStore(s => s.setLang)
+  const { t, lang, te } = useT()
 
   const [form, setForm] = useState(blank())
   const [status, setStatus] = useState<{ text: string; tone: Tone }>({ text: '', tone: 'info' })
@@ -39,9 +43,9 @@ export function SettingsModal() {
         apiKey: form.apiKey || undefined
       })
       setForm(blank())
-      setStatus({ text: '已保存', tone: 'info' })
+      setStatus({ text: t('settings.saved'), tone: 'info' })
     } catch (err) {
-      setStatus({ text: errText(err), tone: 'error' })
+      setStatus({ text: te(errText(err)), tone: 'error' })
     } finally {
       setBusy(false)
     }
@@ -49,12 +53,12 @@ export function SettingsModal() {
 
   const test = async (id: string): Promise<void> => {
     setBusy(true)
-    setStatus({ text: '正在测试…', tone: 'info' })
+    setStatus({ text: t('settings.testing'), tone: 'info' })
     try {
       const result = await testProvider(id)
-      setStatus({ text: result, tone: 'info' })
+      setStatus({ text: te(result), tone: 'info' })
     } catch (err) {
-      setStatus({ text: errText(err), tone: 'error' })
+      setStatus({ text: te(errText(err)), tone: 'error' })
     } finally {
       setBusy(false)
     }
@@ -63,34 +67,46 @@ export function SettingsModal() {
   const pullModels = async (provider: ProviderView): Promise<void> => {
     if (busy) return
     setBusy(true)
-    setStatus({ text: '正在拉取模型…', tone: 'info' })
+    setStatus({ text: t('settings.pulling'), tone: 'info' })
     try {
       const models = await fetchModels(provider.id)
-      setStatus({ text: `已保存 ${models.length} 个模型`, tone: 'info' })
-      showToast(`已拉取 ${models.length} 个模型`)
+      setStatus({ text: t('settings.pulled', { count: models.length }), tone: 'info' })
+      showToast(t('settings.toastPulled', { count: models.length }))
     } catch (err) {
-      setStatus({ text: errText(err), tone: 'error' })
-      showToast(errText(err))
+      setStatus({ text: te(errText(err)), tone: 'error' })
+      showToast(te(errText(err)))
     } finally {
       setBusy(false)
     }
   }
 
   const remove = async (provider: ProviderView): Promise<void> => {
-    if (!window.confirm(`删除服务商「${provider.name}」？使用它的 Bot 需要重新选择。`)) return
+    if (!window.confirm(t('settings.deleteConfirm', { name: provider.name }))) return
     try {
       await removeProvider(provider.id)
       if (form.id === provider.id) setForm(blank())
     } catch (err) {
-      setStatus({ text: errText(err), tone: 'error' })
+      setStatus({ text: te(errText(err)), tone: 'error' })
     }
   }
 
   return (
-    <Sheet open={open} title="设置" onClose={() => setOpen(false)} width={640}>
+    <Sheet open={open} title={t('settings.title')} onClose={() => setOpen(false)} width={640}>
       <p className="sheet-note">
-        支持任何 OpenAI 兼容服务：OpenAI、DeepSeek、OpenRouter、xAI、Ollama。API Key 保存在系统钥匙串，只在本机使用。保存后点「拉取模型」，创建 Bot 时就能直接选模型。
+        {t('settings.note')}
       </p>
+
+      <label className="field lang-field">
+        <span className="field-label">{t('settings.language')}</span>
+        <select
+          className="select"
+          value={lang}
+          onChange={event => setLang(event.target.value as Lang)}
+        >
+          <option value="zh">简体中文</option>
+          <option value="en">English</option>
+        </select>
+      </label>
 
       {providers.length > 0 && (
         <div className="provider-list">
@@ -100,31 +116,31 @@ export function SettingsModal() {
                 <p className="provider-name">
                   {provider.name}
                   {provider.type === 'fake' ? null : provider.hasKey ? (
-                    <span className="tag">Key ✓</span>
+                    <span className="tag">{t('settings.hasKey')}</span>
                   ) : (
-                    <span className="tag tag--danger">无 Key</span>
+                    <span className="tag tag--danger">{t('settings.noKey')}</span>
                   )}
                   {provider.type !== 'fake' && provider.models.length > 0 && (
-                    <span className="tag">{provider.models.length} 个模型</span>
+                    <span className="tag">{t('settings.modelsCount', { count: provider.models.length })}</span>
                   )}
                 </p>
                 <p className="provider-url">
-                  {provider.type === 'fake' ? '不联网的演示模式' : provider.baseUrl || '未填 Base URL'}
+                  {provider.type === 'fake' ? t('settings.fakeDesc') : provider.baseUrl || t('settings.urlFallback')}
                 </p>
               </div>
               {provider.type !== 'fake' && (
                 <div className="provider-actions">
                   <button className="link" onClick={() => void pullModels(provider)}>
-                    拉取模型
+                    {t('settings.fetch')}
                   </button>
                   <button className="link" onClick={() => void test(provider.id)}>
-                    测试
+                    {t('settings.test')}
                   </button>
                   <button className="link" onClick={() => edit(provider)}>
-                    编辑
+                    {t('settings.edit')}
                   </button>
                   <button className="link link--danger" onClick={() => void remove(provider)}>
-                    删除
+                    {t('settings.delete')}
                   </button>
                 </div>
               )}
@@ -134,37 +150,37 @@ export function SettingsModal() {
       )}
 
       <div className="form-section">
-        <p className="section-label">{form.id ? '编辑服务商' : '添加服务商'}</p>
+        <p className="section-label">{form.id ? t('settings.editProvider') : t('settings.add')}</p>
 
         <div className="form-row">
           <label className="field">
-            <span className="field-label">名称</span>
+            <span className="field-label">{t('settings.name')}</span>
             <input
               className="input"
               value={form.name}
-              placeholder="DeepSeek"
+              placeholder={t('settings.namePlaceholder')}
               onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
               autoFocus
             />
           </label>
           <label className="field">
-            <span className="field-label">Base URL</span>
+            <span className="field-label">{t('settings.baseUrl')}</span>
             <input
               className="input"
               value={form.baseUrl}
-              placeholder="https://api.deepseek.com/v1"
+              placeholder={t('settings.basePlaceholder')}
               onChange={e => setForm(f => ({ ...f, baseUrl: e.target.value }))}
             />
           </label>
         </div>
 
         <label className="field" style={{ marginTop: 12 }}>
-          <span className="field-label">API Key</span>
+          <span className="field-label">{t('settings.apiKey')}</span>
           <input
             className="input"
             type="password"
             value={form.apiKey}
-            placeholder={form.id ? '留空保持不变' : 'sk-…'}
+            placeholder={form.id ? t('settings.keyKeep') : t('settings.keyPlaceholder')}
             onChange={e => setForm(f => ({ ...f, apiKey: e.target.value }))}
           />
         </label>
@@ -184,7 +200,7 @@ export function SettingsModal() {
                   setStatus({ text: '', tone: 'info' })
                 }}
               >
-                取消编辑
+                {t('settings.cancelEdit')}
               </button>
             )}
             <button
@@ -192,7 +208,7 @@ export function SettingsModal() {
               onClick={() => void save()}
               disabled={!form.name.trim() || busy}
             >
-              保存服务商
+              {t('settings.save')}
             </button>
           </div>
         </div>

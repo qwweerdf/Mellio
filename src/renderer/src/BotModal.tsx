@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { AVATARS, AVATAR_META } from '../../../shared/avatars'
 import type { BotInput } from '../../../shared/types'
 import { PresetAvatar } from './Avatar'
-import { gsap, prefersReducedMotion, useGSAP } from './motion'
+import { gsap, prefersReducedMotion, revealSafety, useGSAP } from './motion'
 import { Sheet } from './Sheet'
 import { useStore } from './store'
+import { useT } from './useT'
 
 const empty = (providerId: string): BotInput => ({
   name: '',
@@ -35,6 +36,7 @@ export function BotModal() {
   const saveBot = useStore(s => s.saveBot)
   const deleteBot = useStore(s => s.deleteBot)
   const setSettingsOpen = useStore(s => s.setSettingsOpen)
+  const { t, lang } = useT()
 
   const [form, setForm] = useState<BotInput>(empty(''))
   const [saving, setSaving] = useState(false)
@@ -46,6 +48,7 @@ export function BotModal() {
       const items = grid.current?.querySelectorAll('.avatar-pick')
       if (!items?.length) return
       gsap.from(items, { autoAlpha: 0, y: 6, duration: 0.28, stagger: 0.025, ease: 'power2.out' })
+      return revealSafety(grid.current, '.avatar-pick', 1200)
     },
     { scope: grid, dependencies: [editor.open] }
   )
@@ -77,63 +80,63 @@ export function BotModal() {
 
   const remove = async (): Promise<void> => {
     if (!form.id) return
-    if (!window.confirm(`删除 ${form.name}？会话里的记录会保留。`)) return
+    if (!window.confirm(t('bot.deleteConfirm', { name: form.name }))) return
     await deleteBot(form.id)
   }
 
   return (
-    <Sheet open={editor.open} title={form.id ? "编辑 Bot" : "新建 Bot"} onClose={close} width={640}>
+    <Sheet open={editor.open} title={form.id ? t('bot.editTitle') : t('bot.newTitle')} onClose={close} width={640}>
       <div className="field">
         <div className="field-head">
           <span className="field-label">
-            头像 <span className="field-hint">不选就随机</span>
+            {t('bot.avatar')} <span className="field-hint">{t('bot.avatarHint')}</span>
           </span>
           <button type="button" className="link link--muted" onClick={shuffleAvatar}>
-            随机一个
+            {t('bot.random')}
           </button>
         </div>
-        <div className="avatar-grid" role="group" aria-label="选择头像" ref={grid}>
+        <div className="avatar-grid" role="group" aria-label={t('bot.avatarAria')} ref={grid}>
           {AVATARS.map(avatar => (
             <button
               key={avatar.id}
               type="button"
               className={`avatar-pick${form.avatar === avatar.id ? ' is-selected' : ''}`}
               aria-pressed={form.avatar === avatar.id}
-              title={avatar.label}
+              title={lang === 'en' ? avatar.labelEn : avatar.label}
               onClick={() => update({ avatar: avatar.id, emoji: avatar.emoji, color: avatar.color })}
             >
               <PresetAvatar id={avatar.id} size={50} />
-              <span className="avatar-pick-label">{avatar.label}</span>
+              <span className="avatar-pick-label">{lang === 'en' ? avatar.labelEn : avatar.label}</span>
             </button>
           ))}
         </div>
       </div>
 
       <label className="field">
-        <span className="field-label">名字</span>
+        <span className="field-label">{t('bot.name')}</span>
         <input
           className="input"
           value={form.name}
-          placeholder="比如：代码审查员"
+          placeholder={t('bot.namePlaceholder')}
           onChange={event => update({ name: event.target.value })}
           autoFocus
         />
       </label>
 
       <label className="field">
-        <span className="field-label">人设</span>
+        <span className="field-label">{t('bot.persona')}</span>
         <textarea
           className="textarea"
           value={form.systemPrompt}
           rows={3}
-          placeholder="先指出风险，再给具体的修改建议。"
+          placeholder={t('bot.personaPlaceholder')}
           onChange={event => update({ systemPrompt: event.target.value })}
         />
       </label>
 
       {providers.length === 0 ? (
         <div className="hint">
-          还没有配置服务商。
+          {t('bot.noProvider')}
           <button
             className="link"
             style={{ marginLeft: 6 }}
@@ -142,13 +145,13 @@ export function BotModal() {
               setSettingsOpen(true)
             }}
           >
-            去添加
+            {t('bot.goAdd')}
           </button>
         </div>
       ) : (
         <div className="form-row">
           <label className="field">
-            <span className="field-label">服务商</span>
+            <span className="field-label">{t('bot.provider')}</span>
             <select
               className="select"
               value={form.providerId}
@@ -157,19 +160,21 @@ export function BotModal() {
               {providers.map(provider => (
                 <option key={provider.id} value={provider.id}>
                   {provider.name}
-                  {provider.type !== 'fake' && !provider.hasKey ? '（无 Key）' : ''}
+                  {provider.type !== 'fake' && !provider.hasKey ? t('bot.noKey') : ''}
                 </option>
               ))}
             </select>
           </label>
           <label className="field">
             <span className="field-label">
-              模型
+{t('bot.model')}
               {provider && provider.models.length > 0 && (
-                <span className="field-hint">{provider.models.length} 个可选</span>
+                <span className="field-hint">
+                  {t('bot.modelCount', { count: provider.models.length })}
+                </span>
               )}
               {provider && provider.type !== 'fake' && provider.models.length === 0 && (
-                <span className="field-hint">可在设置里拉取</span>
+                <span className="field-hint">{t('bot.modelFetchHint')}</span>
               )}
             </span>
             <input
@@ -177,8 +182,8 @@ export function BotModal() {
               value={form.model}
               placeholder={
                 provider && provider.models.length > 0
-                  ? '选择或输入模型…'
-                  : 'deepseek-chat / grok-4'
+                  ? t('bot.modelPlaceholder')
+                  : t('bot.modelFreePlaceholder')
               }
               list="bot-model-options"
               onChange={event => update({ model: event.target.value })}
@@ -193,7 +198,7 @@ export function BotModal() {
       )}
 
       <label className="field">
-        <span className="field-label">温度 {form.temperature.toFixed(1)}</span>
+        <span className="field-label">{t('bot.temperature', { value: form.temperature.toFixed(1) })}</span>
         <input
           className="range"
           type="range"
@@ -208,21 +213,21 @@ export function BotModal() {
       <div className="form-actions">
         {form.id ? (
           <button className="link link--danger" onClick={() => void remove()}>
-            删除 Bot
+            {t('bot.delete')}
           </button>
         ) : (
           <span />
         )}
         <div className="form-actions-right">
           <button className="btn btn-secondary" onClick={close}>
-            取消
+            {t('bot.cancel')}
           </button>
           <button
             className="btn btn-primary"
             onClick={() => void submit()}
             disabled={!canSave || saving}
           >
-            保存 Bot
+            {t('bot.save')}
           </button>
         </div>
       </div>

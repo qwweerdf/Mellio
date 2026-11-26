@@ -177,7 +177,7 @@ svg {
 .topbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   padding: 0 16px;
   border-bottom: 1px solid var(--line);
   -webkit-app-region: drag;
@@ -187,22 +187,36 @@ svg {
   padding-left: 92px;
 }
 
-.brand {
-  display: inline-flex;
+.rail-brand {
+  display: flex;
   align-items: center;
   gap: 10px;
-  padding: 6px;
-  margin-left: -6px;
+  width: 100%;
+  padding: 2px 4px 6px;
   border-radius: var(--r-sm);
   color: var(--ink);
-  -webkit-app-region: no-drag;
-  transition: background-color var(--m-in) var(--ease);
+  text-align: left;
+  transition: background-color 150ms var(--ease);
 }
-.brand:hover {
-  background: rgba(255, 255, 255, 0.05);
+.rail-brand:hover {
+  background: rgba(255, 255, 255, 0.04);
 }
 
-.brand-name {
+.rail-brand--mini {
+  width: auto;
+  justify-content: center;
+  padding: 2px;
+}
+
+.rail-brand-icon {
+  width: 32px;
+  height: 32px;
+  display: block;
+  border-radius: 9px;
+  flex: 0 0 auto;
+}
+
+.rail-brand-name {
   font-family: var(--font-display);
   font-size: 17px;
   font-weight: 500;
@@ -462,8 +476,7 @@ svg {
   white-space: nowrap;
 }
 
-.bot-item-model {
-  font-family: var(--font-mono);
+.bot-item-preview {
   font-size: 13px;
   color: var(--muted);
   overflow: hidden;
@@ -1859,4 +1872,8 @@ svg {
   .swatch:hover {
     transform: none;
   }
+}
+
+.lang-field {
+  max-width: 220px;
 }

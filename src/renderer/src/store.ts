@@ -9,6 +9,7 @@ import type {
   ReplyMode,
   RunEvent
 } from '../../../shared/types'
+import { localizeError, translate, type Lang } from './i18n'
 
 let started = false
 let toastTimer: ReturnType<typeof setTimeout> | null = null
@@ -19,6 +20,16 @@ function initialCollapsed(): boolean {
   } catch {
     return false
   }
+}
+
+function initialLang(): Lang {
+  try {
+    const saved = localStorage.getItem('mellio.lang')
+    if (saved === 'zh' || saved === 'en') return saved
+  } catch {
+    /* ignore */
+  }
+  return navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en'
 }
 
 export function errText(err: unknown): string {
@@ -47,6 +58,7 @@ interface UiStore {
   botEditor: { open: boolean; botId?: string }
   groupSheet: { open: boolean; mode: 'create' | 'members'; conversationId?: string }
   railCollapsed: boolean
+  lang: Lang
   toast: string | null
 
   init(): Promise<void>
@@ -54,6 +66,7 @@ interface UiStore {
   select(id: string): Promise<void>
   goHome(): void
   toggleRail(): void
+  setLang(lang: Lang): void
 
   openBotChat(botId: string): Promise<void>
   createGroupFromSheet(title: string, botIds: string[]): Promise<void>
@@ -94,6 +107,7 @@ export const useStore = create<UiStore>((set, get) => ({
   botEditor: { open: false },
   groupSheet: { open: false, mode: 'create' },
   railCollapsed: initialCollapsed(),
+  lang: initialLang(),
   toast: null,
 
   init: async () => {
@@ -110,7 +124,7 @@ export const useStore = create<UiStore>((set, get) => ({
       window.api.onRunEvent(event => get().applyEvent(event))
     } catch (err) {
       set({ ready: true })
-      get().showToast(errText(err))
+      get().showToast(localizeError(get().lang, errText(err)))
     }
   },
 
@@ -129,7 +143,7 @@ export const useStore = create<UiStore>((set, get) => ({
         loaded: { ...s.loaded, [id]: true }
       }))
     } catch (err) {
-      get().showToast(errText(err))
+      get().showToast(localizeError(get().lang, errText(err)))
     }
   },
 
@@ -145,13 +159,23 @@ export const useStore = create<UiStore>((set, get) => ({
     }
   },
 
+  setLang: lang => {
+    set({ lang })
+    try {
+      localStorage.setItem('mellio.lang', lang)
+    } catch {
+      /* 忽略存储失败 */
+    }
+    document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en'
+  },
+
   openBotChat: async botId => {
     try {
       const conversation = await window.api.openBotChat(botId)
       await get().refresh()
       await get().select(conversation.id)
     } catch (err) {
-      get().showToast(errText(err))
+      get().showToast(localizeError(get().lang, errText(err)))
     }
   },
 
@@ -162,7 +186,7 @@ export const useStore = create<UiStore>((set, get) => ({
       await get().refresh()
       await get().select(conversation.id)
     } catch (err) {
-      get().showToast(errText(err))
+      get().showToast(localizeError(get().lang, errText(err)))
     }
   },
 
@@ -174,7 +198,7 @@ export const useStore = create<UiStore>((set, get) => ({
       set({ groupSheet: { open: false, mode: 'create' } })
       await get().refresh()
     } catch (err) {
-      get().showToast(errText(err))
+      get().showToast(localizeError(get().lang, errText(err)))
     }
   },
 
@@ -187,7 +211,7 @@ export const useStore = create<UiStore>((set, get) => ({
         conversations: s.conversations.map(c => (c.id === id ? { ...c, replyMode: mode } : c))
       }))
     } catch (err) {
-      get().showToast(errText(err))
+      get().showToast(localizeError(get().lang, errText(err)))
     }
   },
 
@@ -221,14 +245,14 @@ export const useStore = create<UiStore>((set, get) => ({
       if (runIds.length === 0) {
         const conversation = get().conversations.find(c => c.id === id)
         if (conversation?.kind === 'group' && conversation.replyMode === 'mention') {
-          get().showToast('没有 @ 任何 Bot，这条消息不会有人回复。')
+          get().showToast(translate(get().lang, "toast.noMention"))
         }
       }
     } catch (err) {
       set(s => ({
         messages: { ...s.messages, [id]: (s.messages[id] ?? []).filter(m => m.id !== tempId) }
       }))
-      get().showToast(errText(err))
+      get().showToast(localizeError(get().lang, errText(err)))
     }
   },
 
@@ -237,7 +261,7 @@ export const useStore = create<UiStore>((set, get) => ({
     try {
       await window.api.cancel(message.runId)
     } catch (err) {
-      get().showToast(errText(err))
+      get().showToast(localizeError(get().lang, errText(err)))
     }
   },
 
@@ -248,7 +272,7 @@ export const useStore = create<UiStore>((set, get) => ({
       if (!input.id) await get().openBotChat(bot.id)
       get().closeBotEditor()
     } catch (err) {
-      get().showToast(errText(err))
+      get().showToast(localizeError(get().lang, errText(err)))
     }
   },
 
@@ -259,7 +283,7 @@ export const useStore = create<UiStore>((set, get) => ({
       await window.api.saveBot({ ...bot, providerId, model: model.trim() })
       await get().refresh()
     } catch (err) {
-      get().showToast(errText(err))
+      get().showToast(localizeError(get().lang, errText(err)))
     }
   },
 
@@ -273,7 +297,7 @@ export const useStore = create<UiStore>((set, get) => ({
       }
       get().closeBotEditor()
     } catch (err) {
-      get().showToast(errText(err))
+      get().showToast(localizeError(get().lang, errText(err)))
     }
   },
 

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { Bot, Conversation } from '../../../shared/types'
+import appIcon from '../assets/app-icon.png'
 import { BotAvatar, GroupAvatar, PresetAvatar } from './Avatar'
 import { BotModal } from './BotModal'
 import { ChatView } from './ChatView'
@@ -8,12 +9,14 @@ import { Mark } from './Mark'
 import { gsap, prefersReducedMotion, revealSafety, useGSAP } from './motion'
 import { SettingsModal } from './Settings'
 import { useStore } from './store'
+import { useT } from './useT'
 
 export default function App() {
   const init = useStore(s => s.init)
   const ready = useStore(s => s.ready)
   const bots = useStore(s => s.bots)
   const conversations = useStore(s => s.conversations)
+  const messages = useStore(s => s.messages)
   const activeId = useStore(s => s.activeId)
   const railCollapsed = useStore(s => s.railCollapsed)
   const toast = useStore(s => s.toast)
@@ -24,12 +27,20 @@ export default function App() {
   const openGroupCreate = useStore(s => s.openGroupCreate)
   const toggleRail = useStore(s => s.toggleRail)
   const setSettingsOpen = useStore(s => s.setSettingsOpen)
+  const { t, lang } = useT()
   const isMac = window.api.platform === 'darwin'
   const shell = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     void init()
   }, [init])
+
+  useEffect(() => {
+    document.title = t('app.windowTitle')
+    document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en'
+    // 文案随语言切换，t 的闭包已包含当前 lang
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lang])
 
   useGSAP(
     () => {
@@ -50,7 +61,7 @@ export default function App() {
     return (
       <div className="boot">
         <Mark size={28} />
-        <p>正在打开 Mellio…</p>
+        <p>{t('app.loading')}</p>
       </div>
     )
   }
@@ -64,46 +75,77 @@ export default function App() {
   const isDmActive = (botId: string): boolean =>
     activeConversation?.kind === 'dm' && activeConversation.botIds[0] === botId
 
-  const demoBot = bots.find(b => b.id === 'demo-bot')
   let secondary: { label: string; run: () => void } | undefined
-  if (demoBot) {
-    secondary = { label: '先和梅梅聊聊', run: () => void openBotChat(demoBot.id) }
-  } else if (bots.length >= 2) {
-    secondary = { label: '拉个群', run: openGroupCreate }
+  if (bots.length >= 2) {
+    secondary = { label: t('home.group'), run: openGroupCreate }
   } else if (bots.length === 1) {
-    secondary = { label: `和 ${bots[0].name} 聊聊`, run: () => void openBotChat(bots[0].id) }
+    secondary = { label: t('home.chatWith', { name: bots[0].name }), run: () => void openBotChat(bots[0].id) }
+  }
+
+  const cleanPreview = (text?: string): string =>
+    text ? text.replace(/[*_`#>]+/g, '').replace(/\s+/g, ' ').trim() : ''
+
+  const previewFor = (botId: string): string => {
+    let bestText = ''
+    let bestAt = -1
+    for (const conversation of conversations.filter(c => c.botIds.includes(botId))) {
+      let text = ''
+      let at = conversation.lastMessageAt ?? 0
+      const live = messages[conversation.id]
+      if (live?.length) {
+        for (let index = live.length - 1; index >= 0; index--) {
+          const candidate = cleanPreview(live[index].content)
+          if (candidate) {
+            text = candidate
+            at = live[index].createdAt
+            break
+          }
+        }
+      }
+      if (!text) text = cleanPreview(conversation.lastMessage)
+      if (text && at >= bestAt) {
+        bestText = text
+        bestAt = at
+      }
+    }
+    return bestText || t('app.noMessages')
   }
 
   return (
     <div ref={shell} className={`shell${isMac ? ' is-mac' : ''}${railCollapsed ? ' is-rail-collapsed' : ''}`}>
       <a className="skip-link" href="#chat">
-        跳到对话
+        {t('app.skip')}
       </a>
 
       <header className="topbar">
-        <button className="brand" onClick={goHome} aria-label="回到首页">
-          <Mark size={20} />
-          <span className="brand-name">Mellio</span>
-        </button>
         <div className="topbar-right">
-          <span className="topbar-note">记录只在本机</span>
-          <button className="icon-btn" onClick={() => setSettingsOpen(true)} aria-label="设置" title="设置">
+          <span className="topbar-note">{t('app.localOnly')}</span>
+          <button className="icon-btn" onClick={() => setSettingsOpen(true)} aria-label={t('app.settings')} title={t('app.settings')}>
             <IconSliders />
           </button>
         </div>
       </header>
 
       <div className="workspace">
-        <aside className={`rail${railCollapsed ? ' is-collapsed' : ''}`} aria-label="Bot 与群聊">
+        <aside className={`rail${railCollapsed ? ' is-collapsed' : ''}`} aria-label={`${t('app.botsLabel')} · ${t('app.groupsLabel')}`}>
           <div className="rail-inner" key={railCollapsed ? 'collapsed' : 'expanded'}>
             {railCollapsed ? (
               <>
+                <button
+                  className="rail-brand rail-brand--mini"
+                  onClick={goHome}
+                  aria-label={t('app.home')}
+                  title="Mellio"
+                >
+                  <img src={appIcon} alt="" className="rail-brand-icon" />
+                </button>
+
                 <div className="rail-head rail-head--mini">
                   <button
                     className="rail-toggle icon-btn"
                     onClick={toggleRail}
-                    aria-label="展开侧栏"
-                    title="展开侧栏"
+                    aria-label={t('app.expand')}
+                    title={t('app.expand')}
                   >
                     <IconChevron direction="right" />
                   </button>
@@ -112,8 +154,8 @@ export default function App() {
                 <button
                   className="rail-icon-btn"
                   onClick={() => openBotEditor()}
-                  aria-label="新建 Bot"
-                  title="新建 Bot"
+                  aria-label={t('app.newBot')}
+                  title={t('app.newBot')}
                 >
                   <IconPlus />
                 </button>
@@ -152,29 +194,34 @@ export default function App() {
                   className="rail-icon-btn"
                   onClick={openGroupCreate}
                   disabled={bots.length < 2}
-                  aria-label="拉个群"
-                  title={bots.length < 2 ? '至少需要 2 个 Bot' : '拉个群'}
+                  aria-label={t('app.newGroup')}
+                  title={bots.length < 2 ? t('app.minBots') : t('app.newGroup')}
                 >
                   <IconGroup />
                 </button>
               </>
             ) : (
               <>
+                <button className="rail-brand" onClick={goHome} aria-label={t('app.home')}>
+                  <img src={appIcon} alt="" className="rail-brand-icon" />
+                  <span className="rail-brand-name">Mellio</span>
+                </button>
+
                 <div className="rail-head">
-                  <span className="label">Bot</span>
+                  <span className="label">{t('app.botsLabel')}</span>
                   <span className="label-count">{bots.length}</span>
                   <button
                     className="rail-toggle icon-btn"
                     onClick={toggleRail}
-                    aria-label="收起侧栏"
-                    title="收起侧栏"
+                    aria-label={t('app.collapse')}
+                    title={t('app.collapse')}
                   >
                     <IconChevron direction="left" />
                   </button>
                 </div>
 
                 <button className="btn btn-secondary btn-block" onClick={() => openBotEditor()}>
-                  ＋ 新建 Bot
+                  {t('app.newBot')}
                 </button>
 
                 <div className="bot-list">
@@ -183,32 +230,32 @@ export default function App() {
                       <button
                         className="bot-item-main"
                         onClick={() => void openBotChat(bot.id)}
-                        title={`和 ${bot.name} 聊天`}
+                        title={t('app.chatWith', { name: bot.name })}
                       >
                         <BotAvatar bot={bot} size={38} />
                         <span className="bot-item-text">
                           <span className="bot-item-name">{bot.name}</span>
-                          <span className="bot-item-model">{bot.model || '未选模型'}</span>
+                          <span className="bot-item-preview">{previewFor(bot.id)}</span>
                         </span>
                       </button>
                       <button
                         className="icon-btn bot-item-edit"
                         onClick={() => openBotEditor(bot.id)}
-                        aria-label={`编辑 ${bot.name}`}
-                        title="编辑"
+                        aria-label={t('app.editBot', { name: bot.name })}
+                        title={t('app.edit')}
                       >
                         <IconPencil />
                       </button>
                     </div>
                   ))}
                   {bots.length === 0 && (
-                    <p className="rail-empty">还没有 Bot。新建一个，AI 团队就位。</p>
+                    <p className="rail-empty">{t('app.noBots')}</p>
                   )}
                 </div>
 
                 <div className="rail-section">
                   <div className="rail-subhead">
-                    <span className="label">群聊</span>
+                    <span className="label">{t('app.groupsLabel')}</span>
                     <span className="label-count">{groups.length}</span>
                   </div>
 
@@ -223,14 +270,19 @@ export default function App() {
                         <span className="group-item-text">
                           <span className="group-item-name">{group.title}</span>
                           <span className="group-item-meta">
-                            {group.botIds.length} 个 Bot ·{' '}
-                            {group.replyMode === 'mention' ? '@ 回复' : '全部回复'}
+                            {t('app.groupMeta', {
+                              count: group.botIds.length,
+                              mode:
+                                group.replyMode === 'mention'
+                                  ? t('app.modeMention')
+                                  : t('app.modeAll')
+                            })}
                           </span>
                         </span>
                       </button>
                     ))}
                     {groups.length === 0 && (
-                      <p className="rail-empty">还没有群聊。拉几个 Bot 进来。</p>
+                      <p className="rail-empty">{t('app.noGroups')}</p>
                     )}
                   </div>
 
@@ -238,9 +290,9 @@ export default function App() {
                     className="btn btn-secondary btn-block"
                     onClick={openGroupCreate}
                     disabled={bots.length < 2}
-                    title={bots.length < 2 ? '至少需要 2 个 Bot' : '拉个群'}
+                    title={bots.length < 2 ? t('app.minBots') : t('app.newGroup')}
                   >
-                    ＋ 拉个群
+                    {t('app.newGroup')}
                   </button>
                 </div>
               </>
@@ -276,6 +328,7 @@ function Home({
   secondary?: { label: string; run: () => void }
 }) {
   const root = useRef<HTMLDivElement>(null)
+  const { t } = useT()
 
   useGSAP(
     () => {
@@ -300,21 +353,19 @@ function Home({
     <main className="home" id="chat" ref={root}>
       <div className="home-grid">
         <div className="home-copy">
-          <p className="home-eyebrow">本地优先 · 自带 API Key</p>
+          <p className="home-eyebrow">{t('home.eyebrow')}</p>
           <h1 className="home-title">
             <span className="home-line">
-              <span className="home-line-inner">把一支 AI 团队，</span>
+              <span className="home-line-inner">{t('home.title1')}</span>
             </span>
             <span className="home-line">
-              <span className="home-line-inner">放到你的桌面上。</span>
+              <span className="home-line-inner">{t('home.title2')}</span>
             </span>
           </h1>
-          <p className="home-lead">
-            给每个 Bot 设定角色与模型。它们同场回答，聊天记录只留在你的电脑上。
-          </p>
+          <p className="home-lead">{t('home.lead')}</p>
           <div className="home-actions">
             <button className="btn btn-primary" onClick={onNewBot}>
-              新建 Bot
+              {t('home.newBot')}
             </button>
             {secondary && (
               <button className="btn btn-secondary" onClick={secondary.run}>
@@ -322,7 +373,7 @@ function Home({
               </button>
             )}
           </div>
-          <p className="home-fact">多个模型同场 · 无需注册 · 数据留在本机</p>
+          <p className="home-fact">{t('home.fact')}</p>
         </div>
 
         <HomeWindow />
@@ -332,24 +383,25 @@ function Home({
 }
 
 function HomeWindow() {
+  const { t } = useT()
   return (
-    <div className="home-window" role="img" aria-label="产品预览：三个 Bot 在同一个群聊里同时回复">
+    <div className="home-window" role="img" aria-label={t('home.mockAria')}>
       <div className="window-bar">
         <Mark size={16} />
-        <span className="window-title">代码审查组</span>
-        <span className="window-meta">3 个 Bot</span>
+        <span className="window-title">{t('home.mockTitle')}</span>
+        <span className="window-meta">{t('home.mockBots')}</span>
       </div>
       <div className="window-body">
-        <div className="window-msg--user">审一下这段登录逻辑，顺便起个测试。</div>
+        <div className="window-msg--user">{t('home.mockUser')}</div>
 
         <div className="window-bot">
           <PresetAvatar id="golden-retriever" size={28} />
           <div>
             <div className="window-name">
-              梅梅 <span className="window-model">grok-4</span>
+              {t('home.mockBot1')} <span className="window-model">grok-4</span>
             </div>
             <p className="window-text">
-              先看三个风险：超时、重放、日志带了 token
+              {t('home.mockReply1')}
               <span className="caret" aria-hidden="true" />
             </p>
           </div>
@@ -359,9 +411,9 @@ function HomeWindow() {
           <PresetAvatar id="corgi-3" size={28} />
           <div>
             <div className="window-name">
-              阿码 <span className="window-model">deepseek-chat</span>
+              {t('home.mockBot2')} <span className="window-model">deepseek-chat</span>
             </div>
-            <p className="window-text">测试写到 tests/auth.test.ts，覆盖过期 token 和并发续期。</p>
+            <p className="window-text">{t('home.mockReply2')}</p>
           </div>
         </div>
 
@@ -369,15 +421,15 @@ function HomeWindow() {
           <PresetAvatar id="fox-broad-forehead-right" size={28} />
           <div>
             <div className="window-name">
-              判官 <span className="window-model">gpt-4o</span>
+              {t('home.mockBot3')} <span className="window-model">gpt-4o</span>
             </div>
-            <p className="window-text">结论：先修日志，再补重放测试。</p>
+            <p className="window-text">{t('home.mockReply3')}</p>
           </div>
         </div>
       </div>
       <div className="window-composer">
-        <span>@ 阿码 继续</span>
-        <span className="window-send">发送</span>
+        <span>{t('home.mockComposer')}</span>
+        <span className="window-send">{t('home.mockSend')}</span>
       </div>
     </div>
   )

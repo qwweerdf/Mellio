@@ -46,6 +46,9 @@ export interface Conversation {
   kind: ConversationKind
   /** group 下生效：all = 所有 Bot 回复；mention = 只有被 @ 的 Bot 回复 */
   replyMode: ReplyMode
+  /** 最新一条非空消息，供侧栏预览 */
+  lastMessage?: string
+  lastMessageAt?: number
   createdAt: number
   updatedAt: number
 }

@@ -24,27 +24,28 @@ export type AvatarId = (typeof AVATAR_IDS)[number]
 export interface AvatarMeta {
   id: AvatarId
   label: string
+  labelEn: string
   emoji: string
   /** 底色，仅用于加载中和旧数据兜底 */
   color: string
 }
 
 export const AVATARS: AvatarMeta[] = [
-  { id: 'golden-retriever', label: '金毛', emoji: '🐕', color: '#1F3B2B' },
-  { id: 'sheep-3', label: '绵羊', emoji: '🐑', color: '#5B7CFA' },
-  { id: 'fox-broad-forehead-right', label: '赤狐', emoji: '🦊', color: '#5B7CFA' },
-  { id: 'corgi-3', label: '柯基', emoji: '🐕', color: '#1F6B6B' },
-  { id: 'baby-hippopotamus', label: '河马', emoji: '🦛', color: '#7FE3B0' },
-  { id: 'cream-gray-raccoon', label: '浣熊', emoji: '🦝', color: '#2E332F' },
-  { id: 'peach-eared-white-bunny', label: '白兔', emoji: '🐰', color: '#5B7CFA' },
-  { id: 'sea-otter-3', label: '水獭', emoji: '🦦', color: '#1E4E8C' },
-  { id: 'hamster-alert-round-eyes-left', label: '仓鼠', emoji: '🐹', color: '#3F6FD8' },
-  { id: 'fox-round-face-left', label: '小狐狸', emoji: '🦊', color: '#2B2F2C' },
-  { id: 'dog-single-side-patch-left', label: '花斑狗', emoji: '🐶', color: '#2B2F2C' },
-  { id: 'giraffe-gentle-smile', label: '长颈鹿', emoji: '🦒', color: '#10236B' },
-  { id: 'squirrel-happy-small-mouth-right', label: '松鼠', emoji: '🐿️', color: '#F3EDE2' },
-  { id: 'deer-2', label: '小鹿', emoji: '🦌', color: '#2E4A32' },
-  { id: 'dog-forehead-emphasis-left', label: '小狗', emoji: '🐶', color: '#D8F58A' }
+  { id: 'golden-retriever', label: '金毛', labelEn: 'Golden', emoji: '🐕', color: '#1F3B2B' },
+  { id: 'sheep-3', label: '绵羊', labelEn: 'Sheep', emoji: '🐑', color: '#5B7CFA' },
+  { id: 'fox-broad-forehead-right', label: '赤狐', labelEn: 'Red fox', emoji: '🦊', color: '#5B7CFA' },
+  { id: 'corgi-3', label: '柯基', labelEn: 'Corgi', emoji: '🐕', color: '#1F6B6B' },
+  { id: 'baby-hippopotamus', label: '河马', labelEn: 'Hippo', emoji: '🦛', color: '#7FE3B0' },
+  { id: 'cream-gray-raccoon', label: '浣熊', labelEn: 'Raccoon', emoji: '🦝', color: '#2E332F' },
+  { id: 'peach-eared-white-bunny', label: '白兔', labelEn: 'Bunny', emoji: '🐰', color: '#5B7CFA' },
+  { id: 'sea-otter-3', label: '水獭', labelEn: 'Otter', emoji: '🦦', color: '#1E4E8C' },
+  { id: 'hamster-alert-round-eyes-left', label: '仓鼠', labelEn: 'Hamster', emoji: '🐹', color: '#3F6FD8' },
+  { id: 'fox-round-face-left', label: '小狐狸', labelEn: 'Fox', emoji: '🦊', color: '#2B2F2C' },
+  { id: 'dog-single-side-patch-left', label: '花斑狗', labelEn: 'Patch dog', emoji: '🐶', color: '#2B2F2C' },
+  { id: 'giraffe-gentle-smile', label: '长颈鹿', labelEn: 'Giraffe', emoji: '🦒', color: '#10236B' },
+  { id: 'squirrel-happy-small-mouth-right', label: '松鼠', labelEn: 'Squirrel', emoji: '🐿️', color: '#F3EDE2' },
+  { id: 'deer-2', label: '小鹿', labelEn: 'Deer', emoji: '🦌', color: '#2E4A32' },
+  { id: 'dog-forehead-emphasis-left', label: '小狗', labelEn: 'Pup', emoji: '🐶', color: '#D8F58A' }
 ]
 
 export const AVATAR_META: Record<string, AvatarMeta> = Object.fromEntries(
