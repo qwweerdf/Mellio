@@ -1,7 +1,7 @@
 // OpenAI-compatible 流式客户端 + 离线 fake provider。零依赖，只用 fetch。
 // 以后接 Anthropic / Gemini：在这里加一个 switch，不影响上层。
 
-import type { ProviderType } from '../../shared/types'
+import type { ProviderType, WebSource } from '../../shared/types'
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
@@ -11,6 +11,10 @@ export interface ChatMessage {
 export interface ChatChunk {
   delta?: string
   usage?: { in: number; out: number }
+  /** 原生 Web Search 返回的引用，流结束时一次性给出 */
+  sources?: WebSource[]
+  /** 本次回复实际发起的搜索关键词 */
+  queries?: string[]
 }
 
 export interface ChatParams {
@@ -29,33 +33,48 @@ export async function* chat(params: ChatParams): AsyncGenerator<ChatChunk> {
   }
   if (!params.apiKey) throw new Error('这个服务商还没有配置 API Key')
 
+  // DeepSeek 的搜索工具只对 deepseek-flash 开放；声明后由模型自己决定是否搜索
+  const deepSeekSearch =
+    params.provider.type === 'deepseek' && params.model.toLowerCase().startsWith('deepseek-flash')
   const url = `${params.provider.baseUrl.replace(/\/+$/, '')}/chat/completions`
+  const body: Record<string, unknown> = {
+    model: params.model,
+    messages: params.messages,
+    stream: true
+  }
+  if (deepSeekSearch) {
+    // DeepSeek 服务端工具：只传 type；不能使用 tool_choice
+    body.tools = [{ type: 'deepseek_web_search' }]
+  } else {
+    body.temperature = params.temperature ?? 0.7
+  }
+
   const res = await fetch(url, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       authorization: `Bearer ${params.apiKey}`
     },
-    body: JSON.stringify({
-      model: params.model,
-      messages: params.messages,
-      temperature: params.temperature ?? 0.7,
-      stream: true
-    }),
+    body: JSON.stringify(body),
     signal: params.signal
   })
 
   if (!res.ok) {
-    const body = (await res.text().catch(() => '')).slice(0, 300)
-    throw new Error(`服务商返回 HTTP ${res.status}${body ? `：${body}` : ''}`)
+    const text = (await res.text().catch(() => '')).slice(0, 300)
+    throw new Error(`服务商返回 HTTP ${res.status}${text ? `：${text}` : ''}`)
   }
   if (!res.body) throw new Error('服务商没有返回内容流')
 
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
+  const sources: WebSource[] = []
+  const queries: string[] = []
+  let emittedSources = 0
+  let emittedQueries = 0
   let buffer = ''
+  let finished = false
 
-  while (true) {
+  while (!finished) {
     const { done, value } = await reader.read()
     if (done) break
     buffer += decoder.decode(value, { stream: true })
@@ -67,25 +86,106 @@ export async function* chat(params: ChatParams): AsyncGenerator<ChatChunk> {
       if (!line.startsWith('data:')) continue
 
       const payload = line.slice(5).trim()
-      if (payload === '[DONE]') return
-
-      let json: {
-        choices?: Array<{ delta?: { content?: string } }>
-        usage?: { prompt_tokens?: number; completion_tokens?: number }
+      if (payload === '[DONE]') {
+        finished = true
+        break
       }
+
+      let json: any
       try {
         json = JSON.parse(payload)
       } catch {
         continue
       }
 
-      const delta = json.choices?.[0]?.delta?.content
-      if (typeof delta === 'string' && delta) yield { delta }
+      const choice = json.choices?.[0]
+      const delta = choice?.delta
+      if (typeof delta?.content === 'string' && delta.content) {
+        yield { delta: delta.content }
+      }
+
+      // DeepSeek/OpenAI 风格引用
+      collectAnnotations(sources, delta?.annotations)
+      collectAnnotations(sources, choice?.message?.annotations)
+      collectServerSources(sources, delta?.server_tool_calls, queries)
+      collectServerSources(sources, choice?.message?.server_tool_calls, queries)
+
+      // DeepSeek 流式工具事件：call_started 带关键词，call_completed 带来源
+      const event = choice?.server_tool_event
+      if (event?.call) {
+        collectQueries(queries, event.queries)
+        collectServerSources(sources, [{ calls: [event.call] }], queries)
+      }
+
+      if (queries.length > emittedQueries || sources.length > emittedSources) {
+        emittedQueries = queries.length
+        emittedSources = sources.length
+        yield { sources: [...sources], queries: [...queries] }
+      }
+
       if (json.usage) {
         yield { usage: { in: json.usage.prompt_tokens ?? 0, out: json.usage.completion_tokens ?? 0 } }
       }
     }
   }
+}
+
+function collectAnnotations(list: WebSource[], raw: unknown): void {
+  if (!Array.isArray(raw)) return
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const citation = (item as { url_citation?: unknown }).url_citation
+    if (citation && typeof citation === 'object') addSource(list, citation)
+  }
+}
+
+function collectServerSources(list: WebSource[], raw: unknown, queries: string[]): void {
+  if (!Array.isArray(raw)) return
+  for (const step of raw) {
+    if (!step || typeof step !== 'object') continue
+    const calls = (step as { calls?: unknown }).calls
+    if (!Array.isArray(calls)) continue
+    for (const call of calls) {
+      if (!call || typeof call !== 'object') continue
+      const entry = call as { sources?: unknown; queries?: unknown; action?: unknown; query?: unknown }
+      collectQueries(queries, entry.queries)
+      collectQueries(queries, entry.query)
+      if (entry.action && typeof entry.action === 'object') {
+        const action = entry.action as { queries?: unknown; query?: unknown }
+        collectQueries(queries, action.queries)
+        collectQueries(queries, action.query)
+      }
+      if (!Array.isArray(entry.sources)) continue
+      for (const source of entry.sources) addSource(list, source)
+    }
+  }
+}
+
+function collectQueries(list: string[], raw: unknown): void {
+  if (typeof raw === 'string') raw = [raw]
+  if (!Array.isArray(raw)) return
+  for (const item of raw) {
+    if (typeof item !== 'string') continue
+    const query = item.trim()
+    if (query && !list.includes(query) && list.length < 24) list.push(query)
+  }
+}
+
+function addSource(list: WebSource[], raw: unknown): void {
+  if (!raw || typeof raw !== 'object') return
+  const source = raw as { url?: unknown; title?: unknown; snippet?: unknown; content?: unknown }
+  if (typeof source.url !== 'string' || !/^https?:/i.test(source.url)) return
+  if (list.some(item => item.url === source.url)) return
+  list.push({
+    title: typeof source.title === 'string' && source.title ? source.title : source.url,
+    url: source.url,
+    snippet:
+      typeof source.snippet === 'string'
+        ? source.snippet
+        : typeof source.content === 'string'
+          ? source.content
+          : undefined
+  })
 }
 
 export async function listModels(

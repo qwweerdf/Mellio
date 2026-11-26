@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
-import type { Bot, Conversation, Message, ReplyMode } from '../../../shared/types'
+import { Markdown } from './Markdown'
+import { ModelInput } from './ModelInput'
+import type { Bot, Conversation, Message, ReplyMode, WebSource } from '../../../shared/types'
 import { BotAvatar, GroupAvatar } from './Avatar'
 import { gsap, prefersReducedMotion, revealSafety, useGSAP } from './motion'
 import { useStore } from './store'
@@ -183,6 +184,7 @@ function ModelPicker({ bot }: { bot: Bot }) {
   return (
     <div className="model-picker" ref={root}>
       <button
+        type="button"
         className="model-picker-btn"
         onClick={() => setOpen(value => !value)}
         aria-expanded={open}
@@ -227,29 +229,18 @@ function ModelPicker({ bot }: { bot: Bot }) {
                 </span>
               )}
             </span>
-            <input
-              className="input"
+            <ModelInput
               value={model}
-              onChange={event => setModel(event.target.value)}
+              models={selectedProvider?.models ?? []}
               placeholder={
                 selectedProvider && selectedProvider.models.length > 0
                   ? t('chat.modelPlaceholder')
                   : t('chat.modelFreePlaceholder')
               }
-              list="picker-model-options"
+              onChange={setModel}
+              onEnter={() => void save()}
               autoFocus
-              onKeyDown={event => {
-                if (event.key === 'Enter') {
-                  event.preventDefault()
-                  void save()
-                }
-              }}
             />
-            <datalist id="picker-model-options">
-              {(selectedProvider?.models ?? []).map(item => (
-                <option key={item} value={item} />
-              ))}
-            </datalist>
           </label>
 
           <div className="model-pop-actions">
@@ -288,7 +279,13 @@ function MessageStream({
   useEffect(() => {
     const el = ref.current
     if (el) el.scrollTop = el.scrollHeight
-  }, [conversationId, timeline.length, last?.content.length])
+  }, [
+    conversationId,
+    timeline.length,
+    last?.content.length,
+    last?.sources?.length,
+    last?.searchQueries?.length
+  ])
 
   return (
     <div className="stream-wrap" ref={ref}>
@@ -365,9 +362,13 @@ function BotMessage({ message, bot }: { message: Message; bot?: Bot }) {
           )}
         </div>
 
+        {(message.searchQueries?.length || message.sources?.length) && (
+          <SearchSummary queries={message.searchQueries} sources={message.sources} />
+        )}
+
         {message.content ? (
           <div className="md">
-            <ReactMarkdown>{message.content}</ReactMarkdown>
+            <Markdown content={message.content} streaming={streaming} />
           </div>
         ) : message.status === 'queued' ? (
           <p className="msg-status">{t('chat.queued')}</p>
@@ -381,6 +382,47 @@ function BotMessage({ message, bot }: { message: Message; bot?: Bot }) {
         {message.status === 'cancelled' && <p className="msg-note">{t('chat.cancelled')}</p>}
       </div>
     </div>
+  )
+}
+
+function SearchSummary({ queries, sources }: { queries?: string[]; sources?: WebSource[] }) {
+  const { t } = useT()
+  const [open, setOpen] = useState(false)
+  const queryCount = queries?.length ?? 0
+  const sourceCount = sources?.length ?? 0
+  const label =
+    queryCount > 0 && sourceCount > 0
+      ? t('chat.searchSummary', { queries: queryCount, sources: sourceCount })
+      : queryCount > 0
+        ? t('chat.searchSummaryQueries', { queries: queryCount })
+        : t('chat.searchSummarySources', { sources: sourceCount })
+
+  return (
+    <details className="msg-search" onToggle={event => setOpen(event.currentTarget.open)}>
+      <summary>
+        <IconGlobe />
+        <span>{label}</span>
+        <IconChevron open={open} />
+      </summary>
+      <div className="msg-search-body">
+        {queries && queries.length > 0 && (
+          <p className="msg-search-queries">
+            {queries.map(query => `“${query}”`).join('、')}
+          </p>
+        )}
+        {sources && sources.length > 0 && (
+          <ol className="msg-search-list">
+            {sources.map((source, index) => (
+              <li key={`${source.url}-${index}`}>
+                <a href={source.url} target="_blank" rel="noreferrer" title={source.title}>
+                  {source.title || source.url}
+                </a>
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+    </details>
   )
 }
 
@@ -585,6 +627,24 @@ function Composer({
         </div>
       </div>
     </div>
+  )
+}
+
+function IconGlobe() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="14"
+      height="14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18" />
+    </svg>
   )
 }
 

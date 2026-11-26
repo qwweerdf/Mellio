@@ -16,7 +16,8 @@ import type {
   ProviderInput,
   ProviderType,
   ProviderView,
-  ReplyMode
+  ReplyMode,
+  WebSource
 } from '../../shared/types'
 
 export interface StoredProvider {
@@ -84,33 +85,66 @@ CREATE TABLE IF NOT EXISTS message (
   content TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'done',
   error TEXT,
+  sources_json TEXT NOT NULL DEFAULT '[]',
+  queries_json TEXT NOT NULL DEFAULT '[]',
   created_at INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_msg_conv ON message(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_conv_bot ON conversation_bot(bot_id);
 
-PRAGMA user_version = 2;
+PRAGMA user_version = 4;
 `
 
 export function initRepo(dir: string): void {
   mkdirSync(dir, { recursive: true })
   db = new DatabaseSync(join(dir, 'mellio.db'))
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;')
-  const version = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version)
+  let version = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version)
   if (version < 1) {
+    // 全新数据库：SCHEMA 已包含 v2/v3/v4 的字段
     db.exec(SCHEMA)
-  } else if (version < 2) {
+    version = 4
+  }
+  if (version < 2) {
     // v1 → v2：缓存供应商的模型列表
     db.exec(`
       ALTER TABLE provider ADD COLUMN models_json TEXT NOT NULL DEFAULT '[]';
       PRAGMA user_version = 2;
     `)
+    version = 2
+  }
+  if (version < 3) {
+    // v2 → v3：保存原生搜索的引用来源
+    db.exec(`
+      ALTER TABLE message ADD COLUMN sources_json TEXT NOT NULL DEFAULT '[]';
+      PRAGMA user_version = 3;
+    `)
+    version = 3
+  }
+  if (version < 4) {
+    // v3 → v4：保存本次回复实际使用的搜索关键词
+    db.exec(`
+      ALTER TABLE message ADD COLUMN queries_json TEXT NOT NULL DEFAULT '[]';
+      PRAGMA user_version = 4;
+    `)
+    version = 4
   }
 
   importLegacyJson(dir)
   removeDemoData()
+  normalizeProviderTypes()
   normalizeAvatars()
+}
+
+// 早期手动填写的 DeepSeek 服务商升级为 deepseek 类型，启用原生 Web Search
+function normalizeProviderTypes(): void {
+  d()
+    .prepare(
+      `UPDATE provider SET type = 'deepseek'
+       WHERE type = 'openai' AND lower(base_url) LIKE '%api.deepseek.com%'`
+    )
+    .run()
 }
 
 // 早期版本内置的离线演示已移除：清理演示 Provider、Bot 及其 DM 会话
@@ -259,6 +293,8 @@ export function getProvider(id: string): StoredProvider | undefined {
 export function saveProvider(input: ProviderInput, keyEnc?: string): ProviderView {
   const id = input.id || randomUUID()
   const baseUrl = input.baseUrl.trim().replace(/\/+$/, '')
+  const type =
+    input.type === 'openai' && /api\.deepseek\.com/i.test(baseUrl) ? 'deepseek' : input.type
   const existing = input.id ? getProvider(input.id) : undefined
   d()
     .prepare(
@@ -273,7 +309,7 @@ export function saveProvider(input: ProviderInput, keyEnc?: string): ProviderVie
     .run(
       id,
       input.name.trim() || '未命名服务商',
-      input.type,
+      type,
       baseUrl,
       keyEnc ?? null
     )
@@ -538,7 +574,34 @@ interface MessageRow {
   content: string
   status: string
   error: string | null
+  sources_json: string | null
+  queries_json: string | null
   created_at: number
+}
+
+function parseSources(json: string | null): WebSource[] | undefined {
+  try {
+    const parsed = JSON.parse(json || '[]') as unknown
+    if (!Array.isArray(parsed)) return undefined
+    const sources = parsed.filter(
+      (source): source is WebSource =>
+        Boolean(source) && typeof source === 'object' && typeof (source as WebSource).url === 'string'
+    )
+    return sources.length > 0 ? sources : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function parseQueries(json: string | null): string[] | undefined {
+  try {
+    const parsed = JSON.parse(json || '[]') as unknown
+    if (!Array.isArray(parsed)) return undefined
+    const queries = parsed.filter((query): query is string => typeof query === 'string' && query.length > 0)
+    return queries.length > 0 ? queries : undefined
+  } catch {
+    return undefined
+  }
 }
 
 function rowToMessage(row: MessageRow): Message {
@@ -551,6 +614,8 @@ function rowToMessage(row: MessageRow): Message {
     content: row.content,
     status: row.status as MessageStatus,
     error: row.error ?? undefined,
+    sources: parseSources(row.sources_json),
+    searchQueries: parseQueries(row.queries_json),
     createdAt: Number(row.created_at)
   }
 }
@@ -572,8 +637,8 @@ export function addMessage(message: Message): Message {
   tx(() => {
     d()
       .prepare(
-        `INSERT INTO message (id, conversation_id, author, bot_id, run_id, content, status, error, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO message (id, conversation_id, author, bot_id, run_id, content, status, error, sources_json, queries_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         message.id,
@@ -584,6 +649,8 @@ export function addMessage(message: Message): Message {
         message.content,
         message.status,
         message.error ?? null,
+        JSON.stringify(message.sources ?? []),
+        JSON.stringify(message.searchQueries ?? []),
         message.createdAt
       )
     d().prepare('UPDATE conversation SET updated_at = ? WHERE id = ?').run(Date.now(), message.conversationId)
@@ -596,8 +663,17 @@ export function updateMessage(id: string, patch: Partial<Message>): Message | un
   if (!message) return undefined
   const next = { ...message, ...patch }
   d()
-    .prepare('UPDATE message SET content = ?, status = ?, error = ? WHERE id = ?')
-    .run(next.content, next.status, next.error ?? null, id)
+    .prepare(
+      'UPDATE message SET content = ?, status = ?, error = ?, sources_json = ?, queries_json = ? WHERE id = ?'
+    )
+    .run(
+      next.content,
+      next.status,
+      next.error ?? null,
+      JSON.stringify(next.sources ?? []),
+      JSON.stringify(next.searchQueries ?? []),
+      id
+    )
   return next
 }
 

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { AVATARS, AVATAR_META } from '../../../shared/avatars'
 import type { BotInput } from '../../../shared/types'
 import { PresetAvatar } from './Avatar'
+import { ModelInput } from './ModelInput'
 import { gsap, prefersReducedMotion, revealSafety, useGSAP } from './motion'
 import { Sheet } from './Sheet'
 import { useStore } from './store'
@@ -132,6 +133,7 @@ export function BotModal() {
           placeholder={t('bot.personaPlaceholder')}
           onChange={event => update({ systemPrompt: event.target.value })}
         />
+        <span className="hint">{t('bot.personaNote')}</span>
       </label>
 
       {providers.length === 0 ? (
@@ -177,23 +179,17 @@ export function BotModal() {
                 <span className="field-hint">{t('bot.modelFetchHint')}</span>
               )}
             </span>
-            <input
-              className="input"
+            <ModelInput
               value={form.model}
+              models={provider?.models ?? []}
               placeholder={
                 provider && provider.models.length > 0
                   ? t('bot.modelPlaceholder')
                   : t('bot.modelFreePlaceholder')
               }
-              list="bot-model-options"
-              onChange={event => update({ model: event.target.value })}
+              onChange={model => update({ model })}
             />
           </label>
-          <datalist id="bot-model-options">
-            {(provider?.models ?? []).map(model => (
-              <option key={model} value={model} />
-            ))}
-          </datalist>
         </div>
       )}
 

@@ -358,8 +358,22 @@ export const useStore = create<UiStore>((set, get) => ({
       next = list.map(m =>
         m.id === event.messageId ? { ...m, content: m.content + event.delta, status: 'streaming' } : m
       )
+    } else if (event.type === 'search') {
+      next = list.map(m =>
+        m.id === event.messageId
+          ? {
+              ...m,
+              sources: event.sources ?? m.sources,
+              searchQueries: event.queries ?? m.searchQueries
+            }
+          : m
+      )
     } else if (event.type === 'done') {
-      next = list.map(m => (m.id === event.messageId ? { ...m, status: 'done' } : m))
+      next = list.map(m =>
+        m.id === event.messageId
+          ? { ...m, status: 'done', sources: event.sources, searchQueries: event.queries }
+          : m
+      )
     } else if (event.type === 'cancelled') {
       next = list.map(m => (m.id === event.messageId ? { ...m, status: 'cancelled' } : m))
     } else {

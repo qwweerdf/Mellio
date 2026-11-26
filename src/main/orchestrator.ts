@@ -2,9 +2,10 @@
 // 不依赖 Electron——可以用注入的 chat 在 Node 里直接测（见 scripts/selfcheck.ts）。
 
 import { randomUUID } from 'node:crypto'
-import type { Bot, Conversation, Message, RunEvent, SendInput, SendResult } from '../../shared/types'
+import type { Bot, Conversation, Message, RunEvent, SendInput, SendResult, WebSource } from '../../shared/types'
 import * as repo from './repo'
 import { chat as realChat, type ChatMessage } from './llm'
+import { composeSystemPrompt } from './prompt'
 
 export type ChatFn = typeof realChat
 
@@ -115,6 +116,8 @@ async function runOne(
     controller.abort()
   }, TIMEOUT_MS)
   let content = ''
+  let sources: WebSource[] = []
+  let queries: string[] = []
 
   try {
     const bot = repo.getBot(botId)
@@ -139,21 +142,65 @@ async function runOne(
         deps.emit({ type: 'delta', runId, conversationId, botId, messageId: message.id, delta: chunk.delta })
       }
       if (chunk.usage) usage = chunk.usage
+      if (chunk.sources) sources = chunk.sources
+      if (chunk.queries) queries = chunk.queries
+      if (chunk.sources || chunk.queries) {
+        deps.emit({
+          type: 'search',
+          runId,
+          conversationId,
+          botId,
+          messageId: message.id,
+          sources: chunk.sources,
+          queries: chunk.queries
+        })
+      }
     }
 
-    repo.updateMessage(message.id, { content, status: 'done' })
-    deps.emit({ type: 'done', runId, conversationId, botId, messageId: message.id, usage })
+    repo.updateMessage(message.id, {
+      content,
+      status: 'done',
+      sources: sources.length > 0 ? sources : undefined,
+      searchQueries: queries.length > 0 ? queries : undefined
+    })
+    deps.emit({
+      type: 'done',
+      runId,
+      conversationId,
+      botId,
+      messageId: message.id,
+      usage,
+      sources: sources.length > 0 ? sources : undefined,
+      queries: queries.length > 0 ? queries : undefined
+    })
   } catch (err) {
     if (timedOut) {
       const error = '请求超时（120 秒）'
-      repo.updateMessage(message.id, { content, status: 'error', error })
+      repo.updateMessage(message.id, {
+        content,
+        status: 'error',
+        error,
+        sources: sources.length ? sources : undefined,
+        searchQueries: queries.length ? queries : undefined
+      })
       deps.emit({ type: 'error', runId, conversationId, botId, messageId: message.id, error })
     } else if (controller.signal.aborted) {
-      repo.updateMessage(message.id, { content, status: 'cancelled' })
+      repo.updateMessage(message.id, {
+        content,
+        status: 'cancelled',
+        sources: sources.length ? sources : undefined,
+        searchQueries: queries.length ? queries : undefined
+      })
       deps.emit({ type: 'cancelled', runId, conversationId, botId, messageId: message.id })
     } else {
       const error = errText(err)
-      repo.updateMessage(message.id, { content, status: 'error', error })
+      repo.updateMessage(message.id, {
+        content,
+        status: 'error',
+        error,
+        sources: sources.length ? sources : undefined,
+        searchQueries: queries.length ? queries : undefined
+      })
       deps.emit({ type: 'error', runId, conversationId, botId, messageId: message.id, error })
     }
   } finally {
@@ -165,8 +212,7 @@ async function runOne(
 // 自己发的发言算 assistant；其他 Bot 的发言压成带名字前缀的 user 消息。
 // 并行轮里看不到彼此本轮的回复——v0.1 的明确取舍。
 function buildContext(conversationId: string, bot: Bot): ChatMessage[] {
-  const messages: ChatMessage[] = []
-  if (bot.systemPrompt.trim()) messages.push({ role: 'system', content: bot.systemPrompt.trim() })
+  const messages: ChatMessage[] = [{ role: 'system', content: composeSystemPrompt(bot) }]
 
   for (const message of repo.recentMessages(conversationId, CONTEXT_LIMIT)) {
     if (message.author === 'user') {

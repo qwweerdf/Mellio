@@ -9,6 +9,9 @@ import { join } from 'node:path'
 import * as repo from '../src/main/repo'
 import { cancelRun, respond, type ChatFn, type RespondDeps } from '../src/main/orchestrator'
 import { chat } from '../src/main/llm'
+import { composeSystemPrompt } from '../src/main/prompt'
+import { runReAct, type ChatFn as ReActChatFn } from '../src/main/agent/react'
+import { calculatorTool, evaluateExpression } from '../src/main/agent/tools/calculator'
 import type { RunEvent } from '../shared/types'
 
 function makeDir(): string {
@@ -188,6 +191,12 @@ async function testSse(): Promise<void> {
   const server = createServer((_req, res) => {
     res.writeHead(200, { 'content-type': 'text/event-stream' })
     res.write('data: {"choices":[{"delta":{"content":"你"}}]}\n\n')
+    res.write(
+      'data: {"choices":[{"server_tool_event":{"type":"call_started","call":{"action":{"queries":["mellio search"]}}}}]}\n\n'
+    )
+    res.write(
+      'data: {"choices":[{"server_tool_event":{"type":"call_completed","call":{"sources":[{"url":"https://example.com","title":"Example"}]}}}]}\n\n'
+    )
     res.write('data: {"choices":[{"delta":{"content":"好"}}]}\n\n')
     res.write('data: [DONE]\n\n')
     res.end()
@@ -197,6 +206,8 @@ async function testSse(): Promise<void> {
   const port = typeof address === 'object' && address ? address.port : 0
 
   let output = ''
+  let sources: Array<{ url: string; title: string }> = []
+  let queries: string[] = []
   for await (const chunk of chat({
     provider: { type: 'openai', baseUrl: `http://127.0.0.1:${port}` },
     model: 'test',
@@ -204,19 +215,116 @@ async function testSse(): Promise<void> {
     messages: [{ role: 'user', content: 'hi' }]
   })) {
     output += chunk.delta ?? ''
+    if (chunk.sources) sources = chunk.sources
+    if (chunk.queries) queries = chunk.queries
   }
   server.close()
   server.closeAllConnections()
 
   assert.equal(output, '你好')
+  assert.equal(queries[0], 'mellio search')
+  assert.equal(sources[0]?.url, 'https://example.com')
   console.log('  ✓ SSE 流式解析')
 }
 
+function testSystemPrompt(): void {
+  const prompt = composeSystemPrompt({
+    id: 'b',
+    name: '阿码',
+    avatar: '',
+    emoji: '🤖',
+    color: '#000000',
+    systemPrompt: '你是后端工程师，回答直接。',
+    providerId: 'p',
+    model: 'm',
+    temperature: 0.7
+  })
+  assert.match(prompt, /You are 阿码/)
+  assert.match(prompt, /<persona>\n你是后端工程师，回答直接。\n<\/persona>/)
+  assert.ok(!prompt.includes('{{'), '模板占位符应全部替换')
+  console.log('  ✓ 默认 system prompt（名称/人设/时间注入）')
+}
+
+async function testDeepSeekAutoSearch(): Promise<void> {
+  const bodies: Array<{ tools?: unknown; temperature?: unknown }> = []
+  const server = createServer((req, res) => {
+    let body = ''
+    req.on('data', chunk => (body += chunk))
+    req.on('end', () => {
+      bodies.push(JSON.parse(body) as { tools?: unknown; temperature?: unknown })
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.write('data: [DONE]\n\n')
+      res.end()
+    })
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  const port = typeof address === 'object' && address ? address.port : 0
+
+  const run = async (model: string): Promise<void> => {
+    for await (const _chunk of chat({
+      provider: { type: 'deepseek', baseUrl: `http://127.0.0.1:${port}` },
+      model,
+      apiKey: 'k',
+      temperature: 0.7,
+      messages: [{ role: 'user', content: 'hi' }]
+    })) {
+      /* 只为收集请求体 */
+    }
+  }
+  await run('deepseek-flash')
+  await run('deepseek-v4-pro')
+  server.close()
+  server.closeAllConnections()
+
+  assert.deepEqual(bodies[0]?.tools, [{ type: 'deepseek_web_search' }])
+  assert.equal(bodies[0]?.temperature, undefined, '带搜索工具时不传 temperature')
+  assert.equal(bodies[1]?.tools, undefined, '不支持搜索的模型不声明工具')
+  assert.equal(bodies[1]?.temperature, 0.7)
+  console.log('  ✓ DeepSeek 自动联网（模型决定是否调用）')
+}
+
+async function testCalculatorReact(): Promise<void> {
+  assert.equal(await evaluateExpression('(12 + 8) * 3'), 60)
+  assert.equal(await evaluateExpression('sqrt(144)'), 12)
+  await assert.rejects(() => evaluateExpression('a = 1'))
+  await assert.rejects(() => evaluateExpression('import("fs")'))
+  await assert.rejects(() => evaluateExpression('sqrt.constructor'))
+  await assert.rejects(() => evaluateExpression('[1, 2]'))
+
+  let calls = 0
+  const fake: ReActChatFn = async ({ messages }) => {
+    calls++
+    if (messages.some(message => message.role === 'tool')) return { content: '结果是 14。' }
+    return {
+      content: '',
+      toolCalls: [
+        { id: 'call_1', name: 'calculator', arguments: '{"expression":"2 + 3 * 4"}' }
+      ]
+    }
+  }
+  const result = await runReAct({
+    messages: [{ role: 'user', content: '算一下' }],
+    tools: [calculatorTool],
+    chat: fake
+  })
+  assert.equal(result.content, '结果是 14。')
+  assert.deepEqual(
+    result.steps.map(event => event.type),
+    ['tool_call', 'tool_result', 'final']
+  )
+  assert.equal(calls, 2)
+  console.log('  ✓ ReAct 循环 + calculator 工具')
+}
+
 async function main(): Promise<void> {
+  testSystemPrompt()
+  await testCalculatorReact()
   await testLegacyImport()
   await testReplyModes()
   await testCancel()
   await testSse()
+  await testDeepSeekAutoSearch()
   console.log('✓ selfcheck passed')
 }
 

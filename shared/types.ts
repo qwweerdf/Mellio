@@ -1,6 +1,6 @@
 // 前后端共享的唯一契约。只放类型，不放运行时代码。
 
-export type ProviderType = 'openai' | 'fake'
+export type ProviderType = 'openai' | 'deepseek' | 'fake'
 
 export interface ProviderView {
   id: string
@@ -55,6 +55,12 @@ export interface Conversation {
 
 export type MessageStatus = 'queued' | 'streaming' | 'done' | 'error' | 'cancelled'
 
+export interface WebSource {
+  title: string
+  url: string
+  snippet?: string
+}
+
 export interface Message {
   id: string
   conversationId: string
@@ -64,6 +70,10 @@ export interface Message {
   content: string
   status: MessageStatus
   error?: string
+  /** 原生 Web Search 返回的引用来源 */
+  sources?: WebSource[]
+  /** 本次回复实际发起的搜索关键词 */
+  searchQueries?: string[]
   createdAt: number
 }
 
@@ -88,12 +98,23 @@ export type RunEvent =
     }
   | { type: 'delta'; runId: string; conversationId: string; botId: string; messageId: string; delta: string }
   | {
+      type: 'search'
+      runId: string
+      conversationId: string
+      botId: string
+      messageId: string
+      sources?: WebSource[]
+      queries?: string[]
+    }
+  | {
       type: 'done'
       runId: string
       conversationId: string
       botId: string
       messageId: string
       usage?: { in: number; out: number }
+      sources?: WebSource[]
+      queries?: string[]
     }
   | { type: 'cancelled'; runId: string; conversationId: string; botId: string; messageId: string }
   | { type: 'error'; runId: string; conversationId: string; botId: string; messageId: string; error: string }

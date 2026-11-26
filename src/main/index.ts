@@ -89,6 +89,8 @@ function createWindow(): void {
     minWidth: 960,
     minHeight: 620,
     show: false,
+    // macOS 上窗口未激活时，第一次点击也直接落到控件上
+    acceptFirstMouse: true,
     icon: devIcon && existsSync(devIcon) ? devIcon : undefined,
     backgroundColor: '#0f0f0f',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
@@ -107,7 +109,7 @@ function createWindow(): void {
   })
 
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('https://')) void shell.openExternal(url)
+    if (url.startsWith('https://') || url.startsWith('http://')) void shell.openExternal(url)
     return { action: 'deny' }
   })
   win.webContents.on('will-navigate', (event, url) => {

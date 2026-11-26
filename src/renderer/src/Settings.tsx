@@ -1,11 +1,19 @@
 import { useState } from 'react'
-import type { ProviderView } from '../../../shared/types'
+import type { ProviderType, ProviderView } from '../../../shared/types'
 import type { Lang } from './i18n'
 import { Sheet } from './Sheet'
 import { errText, useStore } from './store'
 import { useT } from './useT'
 
-const blank = () => ({ id: '', name: '', baseUrl: '', apiKey: '' })
+interface ProviderForm {
+  id: string
+  name: string
+  baseUrl: string
+  apiKey: string
+  type: ProviderType
+}
+
+const blank = (): ProviderForm => ({ id: '', name: '', baseUrl: '', apiKey: '', type: 'openai' })
 
 type Tone = 'info' | 'error'
 
@@ -26,7 +34,7 @@ export function SettingsModal() {
   const [busy, setBusy] = useState(false)
 
   const edit = (provider: ProviderView): void => {
-    setForm({ id: provider.id, name: provider.name, baseUrl: provider.baseUrl, apiKey: '' })
+    setForm({ id: provider.id, name: provider.name, baseUrl: provider.baseUrl, apiKey: '', type: provider.type })
     setStatus({ text: '', tone: 'info' })
   }
 
@@ -38,7 +46,7 @@ export function SettingsModal() {
       await saveProvider({
         id: form.id || undefined,
         name: form.name,
-        type: 'openai',
+        type: form.type,
         baseUrl: form.baseUrl,
         apiKey: form.apiKey || undefined
       })
@@ -78,6 +86,16 @@ export function SettingsModal() {
     } finally {
       setBusy(false)
     }
+  }
+
+  const applyDeepSeek = (): void => {
+    setForm(f => ({
+      ...f,
+      name: 'DeepSeek',
+      baseUrl: 'https://api.deepseek.com/v1',
+      type: 'deepseek'
+    }))
+    setStatus({ text: '', tone: 'info' })
   }
 
   const remove = async (provider: ProviderView): Promise<void> => {
@@ -123,6 +141,9 @@ export function SettingsModal() {
                   {provider.type !== 'fake' && provider.models.length > 0 && (
                     <span className="tag">{t('settings.modelsCount', { count: provider.models.length })}</span>
                   )}
+                  {provider.type === 'deepseek' && (
+                    <span className="tag">{t('settings.webCapable')}</span>
+                  )}
                 </p>
                 <p className="provider-url">
                   {provider.type === 'fake' ? t('settings.fakeDesc') : provider.baseUrl || t('settings.urlFallback')}
@@ -151,6 +172,13 @@ export function SettingsModal() {
 
       <div className="form-section">
         <p className="section-label">{form.id ? t('settings.editProvider') : t('settings.add')}</p>
+
+        <div className="preset-row">
+          <button type="button" className="btn btn-secondary btn-sm" onClick={applyDeepSeek}>
+            {t('settings.deepseekPreset')}
+          </button>
+          <span className="field-hint">{t('settings.deepseekHint')}</span>
+        </div>
 
         <div className="form-row">
           <label className="field">
