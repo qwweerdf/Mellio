@@ -5,3 +5,7 @@ release/
 .taste-skill/
 .DS_Store
 *.log
+
+# local agent skill installations
+.agents/
+.claude/
