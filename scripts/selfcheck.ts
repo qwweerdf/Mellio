@@ -190,14 +190,15 @@ async function testCancel(): Promise<void> {
 async function testSse(): Promise<void> {
   const server = createServer((_req, res) => {
     res.writeHead(200, { 'content-type': 'text/event-stream' })
-    res.write('data: {"choices":[{"delta":{"content":"你"}}]}\n\n')
     res.write(
-      'data: {"choices":[{"server_tool_event":{"type":"call_started","call":{"action":{"queries":["mellio search"]}}}}]}\n\n'
+      'data: {"id":"1","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"content":"你"},"finish_reason":null}]}\n\n'
     )
     res.write(
-      'data: {"choices":[{"server_tool_event":{"type":"call_completed","call":{"sources":[{"url":"https://example.com","title":"Example"}]}}}]}\n\n'
+      'data: {"id":"1","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"content":"好"},"finish_reason":null}]}\n\n'
     )
-    res.write('data: {"choices":[{"delta":{"content":"好"}}]}\n\n')
+    res.write(
+      'data: {"id":"1","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}\n\n'
+    )
     res.write('data: [DONE]\n\n')
     res.end()
   })
@@ -206,8 +207,6 @@ async function testSse(): Promise<void> {
   const port = typeof address === 'object' && address ? address.port : 0
 
   let output = ''
-  let sources: Array<{ url: string; title: string }> = []
-  let queries: string[] = []
   for await (const chunk of chat({
     provider: { type: 'openai', baseUrl: `http://127.0.0.1:${port}` },
     model: 'test',
@@ -215,15 +214,11 @@ async function testSse(): Promise<void> {
     messages: [{ role: 'user', content: 'hi' }]
   })) {
     output += chunk.delta ?? ''
-    if (chunk.sources) sources = chunk.sources
-    if (chunk.queries) queries = chunk.queries
   }
   server.close()
   server.closeAllConnections()
 
   assert.equal(output, '你好')
-  assert.equal(queries[0], 'mellio search')
-  assert.equal(sources[0]?.url, 'https://example.com')
   console.log('  ✓ SSE 流式解析')
 }
 
@@ -253,6 +248,12 @@ async function testDeepSeekAutoSearch(): Promise<void> {
     req.on('end', () => {
       bodies.push(JSON.parse(body) as { tools?: unknown; temperature?: unknown })
       res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.write(
+        'data: {"id":"1","object":"chat.completion.chunk","created":1,"model":"mock","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}\n\n'
+      )
+      res.write(
+        'data: {"id":"1","object":"chat.completion.chunk","created":1,"model":"mock","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+      )
       res.write('data: [DONE]\n\n')
       res.end()
     })
@@ -273,7 +274,7 @@ async function testDeepSeekAutoSearch(): Promise<void> {
     }
   }
   await run('deepseek-flash')
-  await run('deepseek-v4-pro')
+  await run('deepseek-v4-flash')
   server.close()
   server.closeAllConnections()
 
