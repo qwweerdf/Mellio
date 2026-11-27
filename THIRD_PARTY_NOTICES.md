@@ -27,3 +27,15 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Astryx
+
+Chat tool-call and citation components, design tokens, and theme utilities are
+provided by [Astryx](https://github.com/meta/astryx), Copyright (c) Meta
+Platforms, Inc. and affiliates, under the MIT License.
+
+Astryx is currently in Beta. The packages used by Mellio are:
+
+- `@astryxdesign/core`
+- `@astryxdesign/theme-neutral`
+- `@stylexjs/stylex`

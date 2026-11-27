@@ -15,7 +15,7 @@ import type { BotInput, GroupSettings, ProviderInput, RunEvent, SendInput } from
 import * as repo from './repo'
 import { decryptKey, encryptKey } from './secrets'
 import { listModels, testConnection } from './llm'
-import { cancelRun, respond } from './orchestrator'
+import { cancelRun, regenerateMessage, respond } from './orchestrator'
 
 app.setName('Mellio')
 app.setAppUserModelId('com.mellio.app')
@@ -148,6 +148,14 @@ function registerIpc(): void {
   on('bot:openChat', args => repo.openBotChat(String(args)))
   on('provider:remove', args => repo.removeProvider(String(args)))
   on('run:cancel', args => cancelRun(String(args)))
+
+  on('run:regenerate', args => regenerateMessage(String(args), {
+    emit: (event: RunEvent) => win?.webContents.send('run:event', event),
+    resolveKey: (providerId: string) => {
+      const provider = repo.getProvider(providerId)
+      return decryptKey(provider?.keyEnc)
+    }
+  }))
 
   on('bot:clearHistory', args => repo.clearBotHistory(String(args)))
 

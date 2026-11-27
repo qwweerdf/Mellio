@@ -7,7 +7,7 @@ import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as repo from '../src/main/repo'
-import { cancelRun, respond, type ChatFn, type RespondDeps } from '../src/main/orchestrator'
+import { cancelRun, regenerateMessage, respond, type ChatFn, type RespondDeps } from '../src/main/orchestrator'
 import { chat } from '../src/main/llm'
 import { composeSystemPrompt } from '../src/main/prompt'
 import { isStepCount, ToolLoopAgent } from 'ai'
@@ -425,6 +425,34 @@ async function testClearHistory(): Promise<void> {
   console.log('  ✓ 清空单聊/群聊记录')
 }
 
+async function testRegenerate(): Promise<void> {
+  const dir = makeDir()
+  repo.initRepo(dir)
+  const provider = repo.saveProvider({ name: 'fake', type: 'fake', baseUrl: '' })
+  const bot = repo.saveBot({
+    name: 'A', avatar: '', emoji: '🤖', color: '#000000', systemPrompt: '',
+    providerId: provider.id, model: 'm', temperature: 0.7
+  })
+  const dm = repo.openBotChat(bot.id)
+  repo.addMessage({ id: 'u1', conversationId: dm.id, author: 'user', content: 'hi', status: 'done', createdAt: 1 })
+  const old = repo.addMessage({
+    id: 'old', conversationId: dm.id, author: 'bot', botId: bot.id, runId: 'old-run',
+    content: 'old answer', status: 'done', createdAt: 2
+  })
+  const events: RunEvent[] = []
+  await regenerateMessage('old', { emit: event => events.push(event), resolveKey: () => 'key', chat: fakeChat })
+  assert.equal(repo.getMessage('old'), undefined)
+  const messages = repo.listMessages(dm.id)
+  assert.equal(messages.length, 2)
+  assert.equal(messages[1].author, 'bot')
+  assert.ok(messages[1].id !== old.id)
+  assert.ok(events.some(event => event.type === 'remove' && event.messageId === 'old'))
+  assert.equal(messages[1].status, 'done')
+  repo.closeRepo()
+  rmSync(dir, { recursive: true, force: true })
+  console.log('  ✓ 重新生成消息')
+}
+
 async function main(): Promise<void> {
   testSystemPrompt()
   testAgentTemplates()
@@ -432,6 +460,7 @@ async function main(): Promise<void> {
   await testLegacyImport()
   await testReplyModes()
   await testTeamSettings()
+  await testRegenerate()
   await testClearHistory()
   await testCancel()
   await testSse()

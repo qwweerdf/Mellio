@@ -105,6 +105,43 @@ function isMentioned(bot: Bot, text: string): boolean {
   return pattern.test(text)
 }
 
+export async function regenerateMessage(messageId: string, deps: RespondDeps): Promise<void> {
+  const chatFn = deps.chat ?? realChat
+  const old = repo.getMessage(messageId)
+  if (!old || old.author !== 'bot' || !old.botId) throw new Error('消息不存在')
+  const conversation = repo.getConversation(old.conversationId)
+  if (!conversation) throw new Error('会话不存在')
+
+  const messages = repo.listMessages(conversation.id)
+  const index = messages.findIndex(message => message.id === old.id)
+  const userMsg = [...messages.slice(0, Math.max(0, index))].reverse().find(message => message.author === 'user')
+  if (!userMsg) throw new Error('找不到对应的用户消息')
+
+  deps.emit({ type: 'remove', conversationId: conversation.id, messageId: old.id })
+  repo.deleteMessage(old.id)
+
+  const next: Message = {
+    id: randomUUID(),
+    conversationId: conversation.id,
+    author: 'bot',
+    botId: old.botId,
+    runId: randomUUID(),
+    content: '',
+    status: 'queued',
+    createdAt: Date.now()
+  }
+  repo.addMessage(next)
+  deps.emit({
+    type: 'status',
+    runId: next.runId as string,
+    conversationId: conversation.id,
+    botId: old.botId,
+    messageId: next.id,
+    status: 'queued'
+  })
+  await runOne(conversation.id, old.botId, next, chatFn, deps)
+}
+
 async function runOne(
   conversationId: string,
   botId: string,

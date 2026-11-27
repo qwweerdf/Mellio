@@ -76,6 +76,7 @@ interface UiStore {
 
   send(text: string): Promise<void>
   cancel(message: Message): Promise<void>
+  regenerate(message: Message): Promise<void>
   saveBot(input: BotInput): Promise<void>
   updateBotModel(botId: string, providerId: string, model: string): Promise<void>
   deleteBot(id: string): Promise<void>
@@ -137,14 +138,16 @@ export const useStore = create<UiStore>((set, get) => ({
   },
 
   select: async id => {
-    set({ activeId: id })
-    if (get().loaded[id]) return
     try {
-      const messages = await window.api.listMessages(id)
-      set(s => ({
-        messages: { ...s.messages, [id]: messages },
-        loaded: { ...s.loaded, [id]: true }
-      }))
+      // 先把消息取回来再切换，避免聊天区先空一帧再突然补满造成抖动。
+      if (!get().loaded[id]) {
+        const messages = await window.api.listMessages(id)
+        set(s => ({
+          messages: { ...s.messages, [id]: messages },
+          loaded: { ...s.loaded, [id]: true }
+        }))
+      }
+      set({ activeId: id })
     } catch (err) {
       get().showToast(localizeError(get().lang, errText(err)))
     }
@@ -267,6 +270,15 @@ export const useStore = create<UiStore>((set, get) => ({
     if (!message.runId) return
     try {
       await window.api.cancel(message.runId)
+    } catch (err) {
+      get().showToast(localizeError(get().lang, errText(err)))
+    }
+  },
+
+  regenerate: async message => {
+    if (!message.botId) return
+    try {
+      await window.api.regenerateMessage(message.id)
     } catch (err) {
       get().showToast(localizeError(get().lang, errText(err)))
     }

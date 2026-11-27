@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { Citation } from '@astryxdesign/core/Citation'
+import { ChatLayout, ChatMessage, ChatMessageBubble, ChatMessageList, ChatMessageMetadata, ChatToolCalls } from '@astryxdesign/core/Chat'
 import { Markdown } from './Markdown'
 import { ModelInput } from './ModelInput'
 import type { Bot, Conversation, Message, ReplyMode, ToolStep, WebSource } from '../../../shared/types'
@@ -30,14 +32,15 @@ export function ChatView({ conversation }: { conversation: Conversation }) {
     () => {
       if (prefersReducedMotion()) return
       const tl = gsap.timeline({ defaults: { ease: 'expo.out' } })
-      tl.from('.canvas-head', { autoAlpha: 0, y: -6, duration: 0.3 }, 0)
+      // 只做位移动画，不做透明度：切换会话时文字不会先变灰再恢复。
+      tl.from('.canvas-head', { y: -4, duration: 0.26 }, 0)
         .from(
           '.stream .msg:nth-last-child(-n+8)',
-          { autoAlpha: 0, y: 8, duration: 0.45, stagger: 0.035 },
-          0.05
+          { y: 6, duration: 0.32, stagger: 0.018 },
+          0.04
         )
-        .from('.composer', { autoAlpha: 0, y: 8, duration: 0.35 }, 0.1)
-      return revealSafety(root.current, '.canvas-head, .stream .msg, .composer', 1600)
+        .from('.composer', { y: 4, duration: 0.26 }, 0.08)
+      return revealSafety(root.current, '.canvas-head, .stream .msg, .composer', 1200)
     },
     { scope: root, dependencies: [conversation.id] }
   )
@@ -109,14 +112,20 @@ export function ChatView({ conversation }: { conversation: Conversation }) {
         </div>
       </header>
 
-      <MessageStream
-        conversationId={conversation.id}
-        timeline={timeline}
-        bots={bots}
-        participantCount={participants.length}
-      />
-
-      <Composer conversation={conversation} participants={participants} />
+      <ChatLayout
+        className="mellio-chat-layout"
+        composer={<Composer conversation={conversation} participants={participants} />}
+        density="compact"
+        scrollButton={null}
+      >
+        <MessageStream
+          conversationId={conversation.id}
+          timeline={timeline}
+          bots={bots}
+          participantCount={participants.length}
+          allowRegenerate={!isTeam}
+        />
+      </ChatLayout>
     </main>
   )
 }
@@ -278,87 +287,67 @@ function MessageStream({
   conversationId,
   timeline,
   bots,
-  participantCount
+  participantCount,
+  allowRegenerate
 }: {
   conversationId: string
   timeline: Message[]
   bots: Bot[]
   participantCount: number
+  allowRegenerate: boolean
 }) {
-  const ref = useRef<HTMLDivElement>(null)
-  const stickToBottom = useRef(true)
   const { t } = useT()
-  const last = timeline.length ? timeline[timeline.length - 1] : null
-
-  useEffect(() => {
-    const el = ref.current
-    if (!el) return
-    const onScroll = (): void => {
-      stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100
-    }
-    el.addEventListener('scroll', onScroll, { passive: true })
-    return () => el.removeEventListener('scroll', onScroll)
-  }, [])
-
-  useEffect(() => {
-    const el = ref.current
-    if (!el) return
-    stickToBottom.current = true
-    el.scrollTop = el.scrollHeight
-  }, [conversationId])
-
-  useEffect(() => {
-    const el = ref.current
-    if (!el || !stickToBottom.current) return
-    el.scrollTop = el.scrollHeight
-  }, [
-    timeline.length,
-    last?.content.length,
-    last?.sources?.length,
-    last?.searchQueries?.length,
-    last?.steps?.length,
-    last?.steps?.map(step => step.status).join(',')
-  ])
+  const isStreaming = timeline.some(
+    message => message.status === 'streaming' || message.status === 'queued'
+  )
 
   return (
-    <div className="stream-wrap" ref={ref}>
-      <div className="stream" role="log" aria-live="polite">
-        {timeline.length === 0 && (
-          <p className="stream-empty">
-            {participantCount > 1
-              ? t('chat.streamEmptyMulti')
-              : participantCount === 1
-                ? t('chat.streamEmptySingle')
-                : t('chat.streamEmptyNone')}
-          </p>
-        )}
-        {timeline.map(message =>
-          message.author === 'user' ? (
-            <UserMessage key={message.id} message={message} />
-          ) : (
-            <BotMessage
-              key={message.id}
-              message={message}
-              bot={bots.find(b => b.id === message.botId)}
-            />
-          )
-        )}
-      </div>
-    </div>
+    <ChatMessageList className="stream" align="top" gap={6} isStreaming={isStreaming}>
+      {timeline.length === 0 && (
+        <p className="stream-empty">
+          {participantCount > 1
+            ? t('chat.streamEmptyMulti')
+            : participantCount === 1
+              ? t('chat.streamEmptySingle')
+              : t('chat.streamEmptyNone')}
+        </p>
+      )}
+      {timeline.map(message =>
+        message.author === 'user' ? (
+          <UserMessage key={message.id} message={message} />
+        ) : (
+          <BotMessage
+            key={message.id}
+            message={message}
+            bot={bots.find(b => b.id === message.botId)}
+            allowRegenerate={allowRegenerate}
+          />
+        )
+      )}
+    </ChatMessageList>
   )
 }
 
 function UserMessage({ message }: { message: Message }) {
   return (
-    <div className="msg msg--user">
-      <div className="bubble-user">{message.content}</div>
-    </div>
+    <ChatMessage sender="user" className="msg msg--user">
+      <ChatMessageBubble className="bubble-user">{message.content}</ChatMessageBubble>
+    </ChatMessage>
   )
 }
 
-function BotMessage({ message, bot }: { message: Message; bot?: Bot }) {
+function BotMessage({
+  message,
+  bot,
+  allowRegenerate
+}: {
+  message: Message
+  bot?: Bot
+  allowRegenerate: boolean
+}) {
   const cancel = useStore(s => s.cancel)
-  const { t, te } = useT()
+  const regenerate = useStore(s => s.regenerate)
+  const { t, te, lang } = useT()
   const [copied, setCopied] = useState(false)
   const streaming = message.status === 'streaming'
 
@@ -373,27 +362,20 @@ function BotMessage({ message, bot }: { message: Message; bot?: Bot }) {
   }
 
   return (
-    <div className={`msg${streaming ? ' is-streaming' : ''}`}>
-      <BotAvatar bot={bot} size={32} />
-      <div className="bot-body">
-        <div className="bot-head">
-          <span className="bot-name">{bot?.name ?? 'Bot'}</span>
-          {bot?.model && <span className="bot-model">{bot.model}</span>}
-          {message.content && !streaming && (
-            <button
-              className="link link--muted msg-copy"
-              onClick={() => void copy()}
-              title={t('chat.copyTitle')}
-            >
-              {copied ? t('chat.copied') : t('chat.copy')}
-            </button>
-          )}
-          {streaming && (
+    <ChatMessage
+      sender="assistant"
+      className={`msg${streaming ? ' is-streaming' : ''}`}
+      avatar={<BotAvatar bot={bot} size={32} />}
+      name={bot?.name ?? 'Bot'}
+    >
+      <ChatMessageBubble variant="ghost" className="bot-body">
+        {streaming && (
+          <div className="bot-head">
             <button className="link link--muted msg-stop" onClick={() => void cancel(message)}>
               {t('chat.stop')}
             </button>
-          )}
-        </div>
+          </div>
+        )}
 
         {(message.searchQueries?.length || message.sources?.length) && (
           <SearchSummary queries={message.searchQueries} sources={message.sources} />
@@ -402,7 +384,7 @@ function BotMessage({ message, bot }: { message: Message; bot?: Bot }) {
         {message.steps && message.steps.length > 0 && <ToolTrace steps={message.steps} />}
 
         {message.content ? (
-          <div className="md">
+          <div className="md-astryx">
             <Markdown content={message.content} streaming={streaming} />
           </div>
         ) : message.status === 'queued' ? (
@@ -422,9 +404,35 @@ function BotMessage({ message, bot }: { message: Message; bot?: Bot }) {
           <p className="msg-error">{message.error ? te(message.error) : t('chat.errorFallback')}</p>
         )}
         {message.status === 'cancelled' && <p className="msg-note">{t('chat.cancelled')}</p>}
-      </div>
-    </div>
+
+        {message.content && !streaming && (
+          <ChatMessageMetadata
+            timestamp={formatMessageTime(message.createdAt, lang)}
+            footer={
+              <div className="msg-meta-footer">
+                {bot?.model && <span className="msg-meta-model">{bot.model}</span>}
+                <button className="link link--muted" onClick={() => void copy()} title={t('chat.copyTitle')}>
+                  {copied ? t('chat.copied') : t('chat.copy')}
+                </button>
+                {allowRegenerate && (
+                  <button className="link link--muted" onClick={() => void regenerate(message)}>
+                    {t('chat.regenerate')}
+                  </button>
+                )}
+              </div>
+            }
+          />
+        )}
+      </ChatMessageBubble>
+    </ChatMessage>
   )
+}
+
+function formatMessageTime(createdAt: number, lang: 'zh' | 'en'): string {
+  return new Intl.DateTimeFormat(lang === 'zh' ? 'zh-CN' : 'en-US', {
+    hour: '2-digit',
+    minute: '2-digit'
+  }).format(new Date(createdAt))
 }
 
 function SearchSummary({ queries, sources }: { queries?: string[]; sources?: WebSource[] }) {
@@ -456,9 +464,11 @@ function SearchSummary({ queries, sources }: { queries?: string[]; sources?: Web
           <ol className="msg-search-list">
             {sources.map((source, index) => (
               <li key={`${source.url}-${index}`}>
-                <a href={source.url} target="_blank" rel="noreferrer" title={source.title}>
-                  {source.title || source.url}
-                </a>
+                <Citation
+                  source={{ title: source.title || source.url, url: source.url }}
+                  number={index + 1}
+                  variant="label"
+                />
               </li>
             ))}
           </ol>
@@ -469,60 +479,40 @@ function SearchSummary({ queries, sources }: { queries?: string[]; sources?: Web
 }
 
 function ToolTrace({ steps }: { steps: ToolStep[] }) {
+  const calls = steps.map(step => ({
+    key: step.id,
+    name: step.toolName,
+    status:
+      step.status === 'running'
+        ? ('running' as const)
+        : step.status === 'error'
+          ? ('error' as const)
+          : ('complete' as const),
+    target: formatToolTarget(step.input),
+    duration:
+      step.endedAt && step.startedAt ? `${Math.max(0, step.endedAt - step.startedAt)}ms` : undefined,
+    errorMessage: step.error,
+    resultDetail: step.output ? <pre className="msg-tool-output">{step.output}</pre> : undefined
+  }))
+
   return (
     <div className="msg-tools">
-      {steps.map(step => (
-        <ToolStepCard key={step.id} step={step} />
-      ))}
+      <ChatToolCalls calls={calls} defaultIsExpanded={false} />
     </div>
   )
 }
 
-function ToolStepCard({ step }: { step: ToolStep }) {
-  const { t } = useT()
-  const [open, setOpen] = useState(step.status === 'error')
-  const status =
-    step.status === 'running'
-      ? t('chat.toolRunning')
-      : step.status === 'error'
-        ? t('chat.toolError')
-        : t('chat.toolDone')
-  const input =
-    step.input === undefined
-      ? ''
-      : typeof step.input === 'string'
-        ? step.input
-        : JSON.stringify(step.input, null, 2)
-
-  return (
-    <details
-      className={`msg-tool is-${step.status}`}
-      open={open}
-      onToggle={event => setOpen(event.currentTarget.open)}
-    >
-      <summary>
-        <span className="msg-tool-dot" aria-hidden="true" />
-        <span className="msg-tool-name">{step.toolName}</span>
-        <span className="msg-tool-status">{status}</span>
-        <IconChevron open={open} />
-      </summary>
-      <div className="msg-tool-body">
-        {input && (
-          <>
-            <span className="msg-tool-label">{t('chat.toolInput')}</span>
-            <pre>{input}</pre>
-          </>
-        )}
-        {step.output && (
-          <>
-            <span className="msg-tool-label">{t('chat.toolOutput')}</span>
-            <pre>{step.output}</pre>
-          </>
-        )}
-        {step.error && <p className="msg-tool-error">{step.error}</p>}
-      </div>
-    </details>
-  )
+function formatToolTarget(input: unknown): string | undefined {
+  if (input === undefined) return undefined
+  if (typeof input === 'string') return input
+  if (input && typeof input === 'object' && typeof (input as { expression?: unknown }).expression === 'string') {
+    return (input as { expression: string }).expression
+  }
+  try {
+    return JSON.stringify(input)
+  } catch {
+    return String(input)
+  }
 }
 
 function escapeRegExp(value: string): string {

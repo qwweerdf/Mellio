@@ -180,5 +180,6 @@ export interface MellioApi {
   setReplyMode(conversationId: string, mode: ReplyMode): Promise<void>
   send(input: SendInput): Promise<SendResult>
   cancel(runId: string): Promise<void>
+  regenerateMessage(messageId: string): Promise<void>
   onRunEvent(cb: (event: RunEvent) => void): () => void
 }

@@ -1,47 +1,37 @@
-// Bot 回复的 Markdown 渲染：GFM 表格 + Mermaid 图表（流式期间先显示源码）。
+// Bot 回复的 Markdown：使用 Astryx Markdown，保留 Mermaid 图表。
+// 流式期间 Mermaid 先按代码显示，结束后再渲染。
 
-import {
-  Children,
-  isValidElement,
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode
-} from 'react'
-import ReactMarkdown, { type Components } from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { CodeBlock } from '@astryxdesign/core/CodeBlock'
+import { Markdown as AstryxMarkdown } from '@astryxdesign/core/Markdown'
 
 export function Markdown({ content, streaming }: { content: string; streaming?: boolean }) {
-  const components = useMemo<Components>(
+  const components = useMemo(
     () => ({
-      table: props => (
-        <div className="md-table">
-          <table {...props} />
-        </div>
-      ),
-      a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
-      pre: ({ children }) => {
-        const child = Children.toArray(children)[0]
-        if (isValidElement(child)) {
-          const props = child.props as { className?: string; children?: ReactNode }
-          const lang = /language-([\w-]+)/.exec(props.className ?? '')?.[1]
-          if (lang === 'mermaid') {
-            const chart = String(props.children ?? '').trim()
-            if (!streaming && chart) return <Mermaid chart={chart} />
-          }
+      code: ({ code, language }: { code: string; language?: string }) => {
+        const chart = code.trim()
+        if (language === 'mermaid') {
+          if (!streaming && chart) return <Mermaid chart={chart} />
+          return <CodeBlock code={chart} language="plaintext" isWrapped />
         }
-        return <pre>{children}</pre>
+        return <CodeBlock code={code} language={language || 'plaintext'} isWrapped />
       }
     }),
     [streaming]
   )
 
   return (
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+    <AstryxMarkdown
+      className="md-astryx"
+      density="default"
+      isStreaming={false}
+      headingLevelStart={2}
+      contentWidth="100%"
+      autolink="gfm"
+      components={components}
+    >
       {content}
-    </ReactMarkdown>
+    </AstryxMarkdown>
   )
 }
 

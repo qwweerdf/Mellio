@@ -24,6 +24,7 @@ const api: MellioApi = {
     ipcRenderer.invoke('conversation:setReplyMode', { conversationId, mode }),
   send: input => ipcRenderer.invoke('run:send', input),
   cancel: runId => ipcRenderer.invoke('run:cancel', runId),
+  regenerateMessage: messageId => ipcRenderer.invoke('run:regenerate', messageId),
   onRunEvent: cb => {
     const listener = (_event: unknown, event: RunEvent): void => cb(event)
     ipcRenderer.on('run:event', listener)

@@ -901,10 +901,12 @@ svg {
   min-height: 100%;
   width: 100%;
   max-width: 1040px;
-  margin: 0 auto;
-  padding: 28px 32px 16px;
+  margin-left: 0;
+  margin-right: auto;
+  padding: 24px 24px 16px;
   display: flex;
   flex-direction: column;
+  justify-content: flex-start;
   gap: 28px;
 }
 
@@ -920,7 +922,6 @@ svg {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  animation: msg-in 180ms var(--ease);
 }
 
 .msg--user {
@@ -941,7 +942,8 @@ svg {
 
 .bot-body {
   min-width: 0;
-  max-width: 78ch;
+  width: 100%;
+  max-width: 760px;
 }
 
 .bot-head {
@@ -1081,11 +1083,64 @@ svg {
   text-underline-offset: 3px;
 }
 
+.msg-meta-footer {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: 2px;
+}
+.msg-meta-footer .link {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.msg-meta-footer .link:hover {
+  color: var(--ink);
+}
+.msg-meta-model {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.astryx-chat-message-metadata {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .msg-tools {
   display: flex;
   flex-direction: column;
   gap: 6px;
   margin: 0 0 10px;
+}
+.msg-tools .astryx-chat-tool-calls {
+  margin: 0;
+  padding: 7px 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--ink);
+  font-size: 13px;
+  transition: border-color 160ms var(--ease), background-color 160ms var(--ease);
+}
+.msg-tools .astryx-chat-tool-calls:hover {
+  border-color: var(--line-strong);
+  background: var(--surface);
+}
+.msg-tools .msg-tool-output {
+  margin: 6px 0 2px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .msg-tool {
   background: var(--panel);
@@ -1182,6 +1237,55 @@ svg {
   vertical-align: -2px;
   background: var(--accent);
   animation: caret 1s steps(1) infinite;
+}
+
+/* ---------- Astryx markdown ---------- */
+
+.md-astryx {
+  font-size: 16px;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+.md-astryx p,
+.md-astryx li {
+  font-size: 17px;
+  line-height: 1.8;
+}
+.md-astryx table {
+  font-size: 15.5px;
+}
+.md-astryx th,
+.md-astryx td {
+  padding: 8px 12px;
+}
+.md-astryx h1,
+.md-astryx h2,
+.md-astryx h3,
+.md-astryx h4 {
+  font-family: var(--font-display);
+  letter-spacing: -0.015em;
+  line-height: 1.35;
+}
+.md-astryx h1 {
+  font-size: 24px;
+}
+.md-astryx h2 {
+  font-size: 20px;
+}
+.md-astryx h3 {
+  font-size: 17px;
+}
+.md-astryx ul,
+.md-astryx ol {
+  margin: 8px 0;
+  padding-left: 1.4em;
+}
+.md-astryx li {
+  margin: 4px 0;
+}
+.md-astryx a {
+  color: var(--accent);
+  text-underline-offset: 3px;
 }
 
 /* ---------- markdown ---------- */
@@ -1348,6 +1452,16 @@ svg {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
 }
+.mellio-chat-layout .composer-wrap {
+  padding: 0 0 4px;
+}
+.mellio-chat-layout > div:first-child {
+  padding-bottom: 0;
+}
+.mellio-chat-layout .astryx-chat-message-list {
+  padding-bottom: 4px;
+}
+
 
 .composer textarea {
   display: block;
@@ -2432,4 +2546,15 @@ svg {
 }
 .preset-row .field-hint {
   margin-left: 0;
+}
+
+
+/* Chat scrolls above a composer that stays docked at the bottom. */
+.mellio-chat-layout {
+  flex: 1 1 0%;
+  max-height: none;
+}
+.mellio-chat-layout .astryx-chat-message-list {
+  flex: 1 1 0%;
+  min-height: 100%;
 }
