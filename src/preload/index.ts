@@ -8,6 +8,8 @@ const api: MellioApi = {
   listMessages: conversationId => ipcRenderer.invoke('messages:list', conversationId),
   saveBot: input => ipcRenderer.invoke('bot:save', input),
   removeBot: id => ipcRenderer.invoke('bot:remove', id),
+  clearBotHistory: botId => ipcRenderer.invoke('bot:clearHistory', botId),
+  clearConversation: conversationId => ipcRenderer.invoke('conversation:clear', conversationId),
   saveProvider: input => ipcRenderer.invoke('provider:save', input),
   removeProvider: id => ipcRenderer.invoke('provider:remove', id),
   testProvider: id => ipcRenderer.invoke('provider:test', id),
@@ -16,6 +18,8 @@ const api: MellioApi = {
   createGroup: (title, botIds) => ipcRenderer.invoke('group:create', { title, botIds }),
   setGroupMembers: (conversationId, botIds) =>
     ipcRenderer.invoke('group:setMembers', { conversationId, botIds }),
+  setGroupSettings: (conversationId, settings) =>
+    ipcRenderer.invoke('group:setSettings', { conversationId, settings }),
   setReplyMode: (conversationId, mode) =>
     ipcRenderer.invoke('conversation:setReplyMode', { conversationId, mode }),
   send: input => ipcRenderer.invoke('run:send', input),

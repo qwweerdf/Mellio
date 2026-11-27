@@ -22,6 +22,8 @@ export function ChatView({ conversation }: { conversation: Conversation }) {
     .map(id => bots.find(b => b.id === id))
     .filter(Boolean) as Bot[]
   const isGroup = conversation.kind === 'group'
+  const isTeam = isGroup && conversation.collaborationMode === 'team'
+  const lead = participants.find(bot => bot.id === conversation.leadBotId)
   const dmBot = isGroup ? undefined : participants[0]
 
   useGSAP(
@@ -55,21 +57,32 @@ export function ChatView({ conversation }: { conversation: Conversation }) {
             </h1>
             <p className="conv-sub">
               {isGroup
-                ? t(
-                    conversation.replyMode === 'mention'
-                      ? 'chat.groupMetaMention'
-                      : 'chat.groupMetaAll',
-                    { count: participants.length }
-                  )
+                ? isTeam
+                  ? t('chat.groupMetaTeam', { count: participants.length, lead: lead?.name ?? '—' })
+                  : t(
+                      conversation.replyMode === 'mention'
+                        ? 'chat.groupMetaMention'
+                        : 'chat.groupMetaAll',
+                      { count: participants.length }
+                    )
                 : dmBot
                   ? t('chat.dmSub')
                   : t('chat.deletedBot')}
+              {isGroup && !isTeam && (
+                <button
+                  type="button"
+                  className="conv-team-link"
+                  onClick={() => openGroupMembers(conversation.id)}
+                >
+                  {t('chat.switchToTeam')}
+                </button>
+              )}
             </p>
           </div>
         </div>
 
         <div className="canvas-actions">
-          {isGroup && (
+          {isGroup && !isTeam && (
             <ReplyModeToggle mode={conversation.replyMode} onChange={mode => void setReplyMode(mode)} />
           )}
           {isGroup ? (
@@ -273,14 +286,32 @@ function MessageStream({
   participantCount: number
 }) {
   const ref = useRef<HTMLDivElement>(null)
+  const stickToBottom = useRef(true)
   const { t } = useT()
   const last = timeline.length ? timeline[timeline.length - 1] : null
 
   useEffect(() => {
     const el = ref.current
-    if (el) el.scrollTop = el.scrollHeight
+    if (!el) return
+    const onScroll = (): void => {
+      stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [])
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    stickToBottom.current = true
+    el.scrollTop = el.scrollHeight
+  }, [conversationId])
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el || !stickToBottom.current) return
+    el.scrollTop = el.scrollHeight
   }, [
-    conversationId,
     timeline.length,
     last?.content.length,
     last?.sources?.length,
@@ -377,7 +408,14 @@ function BotMessage({ message, bot }: { message: Message; bot?: Bot }) {
         ) : message.status === 'queued' ? (
           <p className="msg-status">{t('chat.queued')}</p>
         ) : message.status === 'streaming' ? (
-          <p className="msg-status">{t('chat.streaming')}</p>
+          <p className="msg-status msg-thinking">
+            <span className="thinking-dots" aria-hidden="true">
+              <i />
+              <i />
+              <i />
+            </span>
+            {t('chat.thinking')}
+          </p>
         ) : null}
 
         {message.status === 'error' && (
@@ -511,11 +549,15 @@ function Composer({
   const composerRef = useRef<HTMLDivElement>(null)
   const { t } = useT()
   const send = useStore(s => s.send)
-  const busy = useStore(s =>
-    (s.messages[conversation.id] ?? EMPTY).some(
-      m => m.status === 'streaming' || m.status === 'queued'
-    )
+  const cancel = useStore(s => s.cancel)
+  const messages = useStore(s => s.messages[conversation.id] ?? EMPTY)
+  const busy = messages.some(m => m.status === 'streaming' || m.status === 'queued')
+  const activeRuns = messages.filter(
+    m => (m.status === 'streaming' || m.status === 'queued') && m.runId
   )
+  const stopAll = (): void => {
+    for (const message of activeRuns) void cancel(message)
+  }
 
   useEffect(() => {
     if (!mention) return
@@ -682,9 +724,20 @@ function Composer({
             )}
             <span className="composer-hint">{hint}</span>
           </div>
-          <button className="btn btn-primary btn-send" onClick={submit} disabled={!canSend}>
-            {t('chat.send')}
-          </button>
+          {busy ? (
+            <button
+              className="btn btn-secondary btn-send"
+              type="button"
+              onClick={stopAll}
+              disabled={activeRuns.length === 0}
+            >
+              {t('chat.stop')}
+            </button>
+          ) : (
+            <button className="btn btn-primary btn-send" onClick={submit} disabled={!canSend}>
+              {t('chat.send')}
+            </button>
+          )}
         </div>
       </div>
     </div>

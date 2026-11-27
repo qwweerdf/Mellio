@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { AVATARS, AVATAR_META } from '../../../shared/avatars'
 import type { BotInput } from '../../../shared/types'
+import type { AgentTemplate } from './agentTemplates'
 import { PresetAvatar } from './Avatar'
 import { ModelInput } from './ModelInput'
 import { gsap, prefersReducedMotion, revealSafety, useGSAP } from './motion'
 import { Sheet } from './Sheet'
+import { TemplateBrowser } from './TemplateBrowser'
 import { useStore } from './store'
 import { useT } from './useT'
 
@@ -25,6 +27,7 @@ function randomAvatar(): (typeof AVATARS)[number] {
 
 function withRandomAvatar(input: BotInput): BotInput {
   if (input.avatar && AVATAR_META[input.avatar]) return input
+  if (input.emoji) return input
   const pick = randomAvatar()
   return { ...input, avatar: pick.id, emoji: pick.emoji, color: pick.color }
 }
@@ -36,11 +39,13 @@ export function BotModal() {
   const close = useStore(s => s.closeBotEditor)
   const saveBot = useStore(s => s.saveBot)
   const deleteBot = useStore(s => s.deleteBot)
+  const clearBotHistory = useStore(s => s.clearBotHistory)
   const setSettingsOpen = useStore(s => s.setSettingsOpen)
   const { t, lang } = useT()
 
   const [form, setForm] = useState<BotInput>(empty(''))
   const [saving, setSaving] = useState(false)
+  const [templatesOpen, setTemplatesOpen] = useState(false)
   const grid = useRef<HTMLDivElement>(null)
 
   useGSAP(
@@ -59,6 +64,7 @@ export function BotModal() {
     const existing = editor.botId ? bots.find(b => b.id === editor.botId) : undefined
     setForm(existing ? { ...existing } : empty(providers[0]?.id ?? ''))
     setSaving(false)
+    setTemplatesOpen(false)
     // 只在打开时初始化表单
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor.open, editor.botId])
@@ -66,6 +72,17 @@ export function BotModal() {
   const update = (patch: Partial<BotInput>): void => setForm(f => ({ ...f, ...patch }))
   const canSave = Boolean(form.name.trim() && form.providerId && form.model.trim())
   const provider = providers.find(p => p.id === form.providerId)
+
+  const applyTemplate = (template: AgentTemplate): void => {
+    update({
+      name: template.name[lang],
+      emoji: template.emoji,
+      color: template.color,
+      avatar: '',
+      systemPrompt: template.persona[lang]
+    })
+    setTemplatesOpen(false)
+  }
 
   const shuffleAvatar = (): void => {
     const pick = randomAvatar()
@@ -85,8 +102,39 @@ export function BotModal() {
     await deleteBot(form.id)
   }
 
+  const clearHistory = async (): Promise<void> => {
+    if (!form.id) return
+    if (!window.confirm(t('bot.clearHistoryConfirm', { name: form.name }))) return
+    await clearBotHistory(form.id)
+    close()
+  }
+
   return (
-    <Sheet open={editor.open} title={form.id ? t('bot.editTitle') : t('bot.newTitle')} onClose={close} width={640}>
+    <Sheet
+      open={editor.open}
+      title={templatesOpen ? t('bot.templateTitle') : form.id ? t('bot.editTitle') : t('bot.newTitle')}
+      onClose={close}
+      width={640}
+    >
+      {templatesOpen ? (
+        <TemplateBrowser onPick={applyTemplate} onBack={() => setTemplatesOpen(false)} />
+      ) : (
+        <>
+      {!form.id && (
+        <button type="button" className="template-cta" onClick={() => setTemplatesOpen(true)}>
+          <span className="template-cta-icon" aria-hidden="true">
+            ✦
+          </span>
+          <span className="template-cta-text">
+            <strong>{t('bot.browseTemplates')}</strong>
+            <small>{t('bot.templateHint')}</small>
+          </span>
+          <span className="template-cta-arrow" aria-hidden="true">
+            →
+          </span>
+        </button>
+      )}
+
       <div className="field">
         <div className="field-head">
           <span className="field-label">
@@ -208,9 +256,14 @@ export function BotModal() {
 
       <div className="form-actions">
         {form.id ? (
-          <button className="link link--danger" onClick={() => void remove()}>
-            {t('bot.delete')}
-          </button>
+          <div className="form-actions-left">
+            <button className="link link--danger" onClick={() => void clearHistory()}>
+              {t('bot.clearHistory')}
+            </button>
+            <button className="link link--danger" onClick={() => void remove()}>
+              {t('bot.delete')}
+            </button>
+          </div>
         ) : (
           <span />
         )}
@@ -227,6 +280,8 @@ export function BotModal() {
           </button>
         </div>
       </div>
+        </>
+      )}
     </Sheet>
   )
 }

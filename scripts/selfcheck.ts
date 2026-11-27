@@ -13,6 +13,7 @@ import { composeSystemPrompt } from '../src/main/prompt'
 import { isStepCount, ToolLoopAgent } from 'ai'
 import { calculatorTool, evaluateExpression } from '../src/main/agent/tools/calculator'
 import { createMockCalculatorModel } from './mock-agent-model'
+import { AGENT_TEMPLATES, TEMPLATE_CATEGORIES } from '../src/renderer/src/agentTemplates'
 import type { RunEvent } from '../shared/types'
 
 function makeDir(): string {
@@ -238,7 +239,24 @@ function testSystemPrompt(): void {
   assert.match(prompt, /You are 阿码/)
   assert.match(prompt, /<persona>\n你是后端工程师，回答直接。\n<\/persona>/)
   assert.ok(!prompt.includes('{{'), '模板占位符应全部替换')
-  console.log('  ✓ 默认 system prompt（名称/人设/时间注入）')
+  const webPrompt = composeSystemPrompt(
+    {
+      id: 'b',
+      name: '阿码',
+      avatar: '',
+      emoji: '🤖',
+      color: '#000000',
+      systemPrompt: '你是后端工程师。',
+      providerId: 'p',
+      model: 'deepseek-flash',
+      temperature: 0.7
+    },
+    { webSearch: true, calculator: true }
+  )
+  assert.match(webPrompt, /web search:/)
+  assert.match(webPrompt, /calculator:/)
+  assert.match(webPrompt, /Do not claim you cannot access the internet/)
+  console.log('  ✓ 默认 system prompt（名称/人设/时间注入 + 工具能力）')
 }
 
 async function testDeepSeekAutoSearch(): Promise<void> {
@@ -318,11 +336,103 @@ async function testCalculatorReact(): Promise<void> {
   console.log('  ✓ ToolLoopAgent 循环 + calculator 工具')
 }
 
+function testAgentTemplates(): void {
+  assert.equal(AGENT_TEMPLATES.length, 50)
+  const ids = new Set<string>()
+  const categories = new Set(TEMPLATE_CATEGORIES.map(category => category.id))
+  for (const template of AGENT_TEMPLATES) {
+    assert.ok(!ids.has(template.id), `duplicate template id: ${template.id}`)
+    ids.add(template.id)
+    assert.ok(categories.has(template.category), `unknown category: ${template.category}`)
+    for (const field of ['name', 'description', 'vibe', 'persona'] as const) {
+      assert.ok(template[field].zh.trim(), `${template.id}.${field}.zh is empty`)
+      assert.ok(template[field].en.trim(), `${template.id}.${field}.en is empty`)
+    }
+    assert.ok(template.persona.zh.length < 3000, `${template.id} zh persona is too long`)
+    assert.ok(template.persona.en.length < 3000, `${template.id} en persona is too long`)
+  }
+  console.log('  ✓ 50 个双语职业模板')
+}
+
+async function testTeamSettings(): Promise<void> {
+  const dir = makeDir()
+  repo.initRepo(dir)
+  const provider = repo.saveProvider({ name: 'fake', type: 'fake', baseUrl: '' })
+  const [lead, worker, other] = ['负责人', '成员 A', '成员 B'].map(name =>
+    repo.saveBot({
+      name,
+      avatar: '',
+      emoji: '🤖',
+      color: '#000000',
+      systemPrompt: '',
+      providerId: provider.id,
+      model: 'm',
+      temperature: 0.7
+    })
+  )
+  const group = repo.createGroup('团队', [lead.id, worker.id, other.id], {
+    mode: 'team',
+    leadBotId: lead.id,
+    maxRejections: 3
+  })
+  assert.equal(group.collaborationMode, 'team')
+  assert.equal(group.leadBotId, lead.id)
+  assert.equal(group.maxRejections, 3)
+
+  const parallel = repo.setGroupSettings(group.id, {
+    mode: 'parallel',
+    maxRejections: 2
+  })
+  assert.equal(parallel.collaborationMode, 'parallel')
+  assert.equal(parallel.leadBotId, undefined)
+
+  assert.throws(() =>
+    repo.setGroupSettings(group.id, { mode: 'team', maxRejections: 2 })
+  )
+  repo.setGroupSettings(group.id, { mode: 'team', leadBotId: worker.id, maxRejections: 99 })
+  assert.equal(repo.getConversation(group.id)?.maxRejections, 5)
+  repo.setGroupMembers(group.id, [lead.id, other.id])
+  assert.equal(repo.getConversation(group.id)?.leadBotId, lead.id, '成员变更后保留有效负责人')
+
+  repo.closeRepo()
+  rmSync(dir, { recursive: true, force: true })
+  console.log('  ✓ 团队协作群设置（负责人/驳回次数）')
+}
+
+async function testClearHistory(): Promise<void> {
+  const dir = makeDir()
+  repo.initRepo(dir)
+  const provider = repo.saveProvider({ name: 'fake', type: 'fake', baseUrl: '' })
+  const bot = repo.saveBot({
+    name: 'A', avatar: '', emoji: '🤖', color: '#000000', systemPrompt: '',
+    providerId: provider.id, model: 'm', temperature: 0.7
+  })
+  const dm = repo.openBotChat(bot.id)
+  repo.addMessage({ id: 'm1', conversationId: dm.id, author: 'user', content: 'hi', status: 'done', createdAt: 1 })
+  assert.equal(repo.listMessages(dm.id).length, 1)
+  repo.clearBotHistory(bot.id)
+  assert.equal(repo.listMessages(dm.id).length, 0)
+  assert.ok(repo.getConversation(dm.id), '清空后保留单聊会话')
+
+  const group = repo.createGroup('g', [bot.id, repo.saveBot({ name: 'B', avatar: '', emoji: '🤖', color: '#000000', systemPrompt: '', providerId: provider.id, model: 'm', temperature: 0.7 }).id])
+  repo.addMessage({ id: 'm2', conversationId: group.id, author: 'user', content: 'hi', status: 'done', createdAt: 2 })
+  repo.clearConversation(group.id)
+  assert.equal(repo.listMessages(group.id).length, 0)
+  assert.equal(repo.getConversation(group.id)?.title, 'g', '清空后保留群设置')
+
+  repo.closeRepo()
+  rmSync(dir, { recursive: true, force: true })
+  console.log('  ✓ 清空单聊/群聊记录')
+}
+
 async function main(): Promise<void> {
   testSystemPrompt()
+  testAgentTemplates()
   await testCalculatorReact()
   await testLegacyImport()
   await testReplyModes()
+  await testTeamSettings()
+  await testClearHistory()
   await testCancel()
   await testSse()
   await testDeepSeekAutoSearch()

@@ -270,13 +270,19 @@ export default function App() {
                         <span className="group-item-text">
                           <span className="group-item-name">{group.title}</span>
                           <span className="group-item-meta">
-                            {t('app.groupMeta', {
-                              count: group.botIds.length,
-                              mode:
-                                group.replyMode === 'mention'
-                                  ? t('app.modeMention')
-                                  : t('app.modeAll')
-                            })}
+                            {group.collaborationMode === 'team'
+                              ? t('app.groupMetaTeam', {
+                                  count: group.botIds.length,
+                                  lead:
+                                    bots.find(bot => bot.id === group.leadBotId)?.name ?? '—'
+                                })
+                              : t('app.groupMeta', {
+                                  count: group.botIds.length,
+                                  mode:
+                                    group.replyMode === 'mention'
+                                      ? t('app.modeMention')
+                                      : t('app.modeAll')
+                                })}
                           </span>
                         </span>
                       </button>

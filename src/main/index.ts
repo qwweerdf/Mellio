@@ -11,7 +11,7 @@ import {
 } from 'electron'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import type { BotInput, ProviderInput, RunEvent, SendInput } from '../../shared/types'
+import type { BotInput, GroupSettings, ProviderInput, RunEvent, SendInput } from '../../shared/types'
 import * as repo from './repo'
 import { decryptKey, encryptKey } from './secrets'
 import { listModels, testConnection } from './llm'
@@ -86,8 +86,8 @@ function createWindow(): void {
   win = new BrowserWindow({
     width: 1180,
     height: 800,
-    minWidth: 960,
-    minHeight: 620,
+    minWidth: 760,
+    minHeight: 560,
     show: false,
     // macOS 上窗口未激活时，第一次点击也直接落到控件上
     acceptFirstMouse: true,
@@ -149,6 +149,10 @@ function registerIpc(): void {
   on('provider:remove', args => repo.removeProvider(String(args)))
   on('run:cancel', args => cancelRun(String(args)))
 
+  on('bot:clearHistory', args => repo.clearBotHistory(String(args)))
+
+  on('conversation:clear', args => repo.clearConversation(String(args)))
+
   on('provider:save', args => {
     const input = args as ProviderInput
     const keyEnc = input.apiKey ? encryptKey(input.apiKey) : undefined
@@ -170,14 +174,23 @@ function registerIpc(): void {
   })
 
   on('group:create', args => {
-    const { title, botIds } = args as { title: string; botIds: string[] }
-    return repo.createGroup(title, botIds)
+    const { title, botIds, settings } = args as {
+      title: string
+      botIds: string[]
+      settings?: GroupSettings
+    }
+    return repo.createGroup(title, botIds, settings)
   })
 
   on('group:setMembers', args => {
     const { conversationId, botIds } = args as { conversationId: string; botIds: string[] }
     repo.setGroupMembers(conversationId, botIds)
     return true
+  })
+
+  on('group:setSettings', args => {
+    const { conversationId, settings } = args as { conversationId: string; settings: GroupSettings }
+    return repo.setGroupSettings(conversationId, settings)
   })
 
   on('conversation:setReplyMode', args => {

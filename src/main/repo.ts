@@ -17,6 +17,8 @@ import type {
   ProviderType,
   ProviderView,
   ReplyMode,
+  CollaborationMode,
+  GroupSettings,
   ToolStep,
   WebSource
 } from '../../shared/types'
@@ -66,6 +68,9 @@ CREATE TABLE IF NOT EXISTS conversation (
   title TEXT NOT NULL,
   kind TEXT NOT NULL DEFAULT 'group',
   reply_mode TEXT NOT NULL DEFAULT 'all',
+  collaboration_mode TEXT NOT NULL DEFAULT 'parallel',
+  lead_bot_id TEXT,
+  max_rejections INTEGER NOT NULL DEFAULT 2,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -95,7 +100,7 @@ CREATE TABLE IF NOT EXISTS message (
 CREATE INDEX IF NOT EXISTS idx_msg_conv ON message(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_conv_bot ON conversation_bot(bot_id);
 
-PRAGMA user_version = 5;
+PRAGMA user_version = 6;
 `
 
 export function initRepo(dir: string): void {
@@ -104,9 +109,9 @@ export function initRepo(dir: string): void {
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;')
   let version = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version)
   if (version < 1) {
-    // 全新数据库：SCHEMA 已包含 v2–v5 的字段
+    // 全新数据库：SCHEMA 已包含 v2–v6 的字段
     db.exec(SCHEMA)
-    version = 5
+    version = 6
   }
   if (version < 2) {
     // v1 → v2：缓存供应商的模型列表
@@ -139,6 +144,16 @@ export function initRepo(dir: string): void {
       PRAGMA user_version = 5;
     `)
     version = 5
+  }
+  if (version < 6) {
+    // v5 → v6：群聊团队协作设置
+    db.exec(`
+      ALTER TABLE conversation ADD COLUMN collaboration_mode TEXT NOT NULL DEFAULT 'parallel';
+      ALTER TABLE conversation ADD COLUMN lead_bot_id TEXT;
+      ALTER TABLE conversation ADD COLUMN max_rejections INTEGER NOT NULL DEFAULT 2;
+      PRAGMA user_version = 6;
+    `)
+    version = 6
   }
 
   importLegacyJson(dir)
@@ -439,6 +454,9 @@ interface ConversationRow {
   title: string
   kind: string
   reply_mode: string
+  collaboration_mode: string
+  lead_bot_id: string | null
+  max_rejections: number
   created_at: number
   updated_at: number
 }
@@ -471,6 +489,9 @@ function rowToConversation(row: ConversationRow): Conversation {
     botIds: participantIds(row.id),
     kind: row.kind as ConversationKind,
     replyMode: row.reply_mode as ReplyMode,
+    collaborationMode: (row.collaboration_mode || 'parallel') as CollaborationMode,
+    leadBotId: row.lead_bot_id ?? undefined,
+    maxRejections: Number(row.max_rejections ?? 2),
     lastMessage: latest?.content,
     lastMessageAt: latest?.at,
     createdAt: Number(row.created_at),
@@ -531,25 +552,60 @@ export function openBotChat(botId: string): Conversation {
   return getConversation(id) as Conversation
 }
 
-export function createGroup(title: string, botIds: string[]): Conversation {
+export function createGroup(
+  title: string,
+  botIds: string[],
+  settings?: GroupSettings
+): Conversation {
   const unique = [...new Set(botIds)].filter(id => Boolean(getBot(id)))
   if (unique.length < 2) throw new Error('群聊至少需要 2 个 Bot')
 
   const names = unique.map(id => getBot(id)?.name).filter(Boolean) as string[]
   const finalTitle = title.trim() || names.slice(0, 3).join('、') || '新群聊'
+  const mode: CollaborationMode = settings?.mode === 'team' ? 'team' : 'parallel'
+  const leadBotId =
+    mode === 'team' && settings?.leadBotId && unique.includes(settings.leadBotId)
+      ? settings.leadBotId
+      : undefined
+  if (mode === 'team' && !leadBotId) throw new Error('团队协作必须选择负责人')
+  const maxRejections = clampRejections(settings?.maxRejections)
   const now = Date.now()
   const id = randomUUID()
 
   tx(() => {
     d()
       .prepare(
-        `INSERT INTO conversation (id, title, kind, reply_mode, created_at, updated_at)
-         VALUES (?, ?, 'group', 'all', ?, ?)`
+        `INSERT INTO conversation (id, title, kind, reply_mode, collaboration_mode, lead_bot_id, max_rejections, created_at, updated_at)
+         VALUES (?, ?, 'group', 'all', ?, ?, ?, ?, ?)`
       )
-      .run(id, finalTitle, now, now)
+      .run(id, finalTitle, mode, leadBotId ?? null, maxRejections, now, now)
     insertParticipants(id, unique)
   })
   return getConversation(id) as Conversation
+}
+
+function clampRejections(value?: number): number {
+  if (!Number.isFinite(value)) return 2
+  return Math.max(0, Math.min(5, Math.round(Number(value))))
+}
+
+export function setGroupSettings(conversationId: string, settings: GroupSettings): Conversation {
+  const conversation = getConversation(conversationId)
+  if (!conversation) throw new Error('会话不存在')
+  if (conversation.kind !== 'group') throw new Error('只有群聊可以设置团队协作')
+
+  const mode: CollaborationMode = settings.mode === 'team' ? 'team' : 'parallel'
+  const leadBotId =
+    mode === 'team' && settings.leadBotId && conversation.botIds.includes(settings.leadBotId)
+      ? settings.leadBotId
+      : undefined
+  if (mode === 'team' && !leadBotId) throw new Error('团队协作必须选择负责人')
+  d()
+    .prepare(
+      'UPDATE conversation SET collaboration_mode = ?, lead_bot_id = ?, max_rejections = ?, updated_at = ? WHERE id = ?'
+    )
+    .run(mode, leadBotId ?? null, clampRejections(settings.maxRejections), Date.now(), conversationId)
+  return getConversation(conversationId) as Conversation
 }
 
 export function setGroupMembers(conversationId: string, botIds: string[]): void {
@@ -563,6 +619,11 @@ export function setGroupMembers(conversationId: string, botIds: string[]): void 
   tx(() => {
     d().prepare('DELETE FROM conversation_bot WHERE conversation_id = ?').run(conversationId)
     insertParticipants(conversationId, unique)
+    if (conversation.collaborationMode === 'team' && !unique.includes(conversation.leadBotId ?? '')) {
+      d()
+        .prepare('UPDATE conversation SET lead_bot_id = ? WHERE id = ?')
+        .run(unique[0] ?? null, conversationId)
+    }
     d().prepare('UPDATE conversation SET updated_at = ? WHERE id = ?').run(Date.now(), conversationId)
   })
 }
@@ -571,6 +632,33 @@ export function setReplyMode(conversationId: string, mode: ReplyMode): void {
   d()
     .prepare('UPDATE conversation SET reply_mode = ? WHERE id = ?')
     .run(mode === 'mention' ? 'mention' : 'all', conversationId)
+}
+
+export function deleteMessage(id: string): void {
+  d().prepare('DELETE FROM message WHERE id = ?').run(id)
+}
+
+export function clearConversation(conversationId: string): void {
+  const conversation = getConversation(conversationId)
+  if (!conversation) throw new Error('会话不存在')
+  tx(() => {
+    d().prepare('DELETE FROM message WHERE conversation_id = ?').run(conversationId)
+    d().prepare('UPDATE conversation SET updated_at = ? WHERE id = ?').run(Date.now(), conversationId)
+  })
+}
+
+export function clearBotHistory(botId: string): void {
+  const row = d()
+    .prepare(
+      `SELECT c.id FROM conversation c
+       JOIN conversation_bot cb ON cb.conversation_id = c.id
+       WHERE c.kind = 'dm' AND cb.bot_id = ?
+         AND (SELECT COUNT(*) FROM conversation_bot x WHERE x.conversation_id = c.id) = 1
+       ORDER BY c.updated_at DESC
+       LIMIT 1`
+    )
+    .get(botId) as { id: string } | undefined
+  if (row) clearConversation(row.id)
 }
 
 // ---------- messages ----------

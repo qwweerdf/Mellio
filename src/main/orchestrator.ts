@@ -2,10 +2,11 @@
 // 不依赖 Electron——可以用注入的 chat 在 Node 里直接测（见 scripts/selfcheck.ts）。
 
 import { randomUUID } from 'node:crypto'
-import type { Bot, Conversation, Message, RunEvent, SendInput, SendResult, ToolStep, WebSource } from '../../shared/types'
+import type { Bot, Conversation, Message, ProviderType, RunEvent, SendInput, SendResult, ToolStep, WebSource } from '../../shared/types'
 import * as repo from './repo'
 import { chat as realChat, type ChatMessage } from './llm'
 import { composeSystemPrompt } from './prompt'
+import { cancelTeamRun, respondTeam } from './team'
 
 export type ChatFn = typeof realChat
 
@@ -23,6 +24,7 @@ const active = new Map<string, AbortController>()
 
 export function cancelRun(runId: string): void {
   active.get(runId)?.abort()
+  cancelTeamRun(runId)
 }
 
 export async function respond(input: SendInput, deps: RespondDeps): Promise<SendResult> {
@@ -32,6 +34,10 @@ export async function respond(input: SendInput, deps: RespondDeps): Promise<Send
 
   const text = input.text.trim()
   if (!text) throw new Error('不能发送空消息')
+
+  if (conversation.collaborationMode === 'team') {
+    return respondTeam(conversation, text, deps)
+  }
 
   const botIds = resolveTargets(conversation, text)
 
@@ -125,7 +131,7 @@ async function runOne(
     const provider = bot ? repo.getProvider(bot.providerId) : undefined
     if (!bot || !provider) throw new Error('Bot 或服务商不存在，请重新配置')
 
-    const messages = buildContext(conversationId, bot)
+    const messages = buildContext(conversationId, bot, provider)
     repo.updateMessage(message.id, { status: 'streaming' })
     deps.emit({ type: 'status', runId, conversationId, botId, messageId: message.id, status: 'streaming' })
 
@@ -229,8 +235,25 @@ async function runOne(
 
 // 自己发的发言算 assistant；其他 Bot 的发言压成带名字前缀的 user 消息。
 // 并行轮里看不到彼此本轮的回复——v0.1 的明确取舍。
-function buildContext(conversationId: string, bot: Bot): ChatMessage[] {
-  const messages: ChatMessage[] = [{ role: 'system', content: composeSystemPrompt(bot) }]
+function buildContext(
+  conversationId: string,
+  bot: Bot,
+  provider: { type: ProviderType }
+): ChatMessage[] {
+  const model = bot.model.toLowerCase()
+  const deepseek = provider.type === 'deepseek'
+  const pro = deepseek && model.startsWith('deepseek-v4-pro')
+  const webSearch = deepseek && (model.startsWith('deepseek-flash') || pro)
+  const messages: ChatMessage[] = [
+    {
+      role: 'system',
+      content: composeSystemPrompt(bot, {
+        webSearch,
+        webSearchTool: pro ? 'web_search' : 'deepseek_web_search',
+        calculator: !pro
+      })
+    }
+  ]
 
   for (const message of repo.recentMessages(conversationId, CONTEXT_LIMIT)) {
     if (message.author === 'user') {

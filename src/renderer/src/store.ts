@@ -3,6 +3,7 @@ import type {
   Bot,
   BotInput,
   Conversation,
+  GroupSettings,
   Message,
   ProviderInput,
   ProviderView,
@@ -69,8 +70,8 @@ interface UiStore {
   setLang(lang: Lang): void
 
   openBotChat(botId: string): Promise<void>
-  createGroupFromSheet(title: string, botIds: string[]): Promise<void>
-  saveGroupMembers(botIds: string[]): Promise<void>
+  createGroupFromSheet(title: string, botIds: string[], settings: GroupSettings): Promise<void>
+  saveGroupMembers(botIds: string[], settings: GroupSettings): Promise<void>
   setReplyMode(mode: ReplyMode): Promise<void>
 
   send(text: string): Promise<void>
@@ -78,6 +79,8 @@ interface UiStore {
   saveBot(input: BotInput): Promise<void>
   updateBotModel(botId: string, providerId: string, model: string): Promise<void>
   deleteBot(id: string): Promise<void>
+  clearBotHistory(botId: string): Promise<void>
+  clearConversation(conversationId: string): Promise<void>
 
   saveProvider(input: ProviderInput): Promise<void>
   removeProvider(id: string): Promise<void>
@@ -179,9 +182,9 @@ export const useStore = create<UiStore>((set, get) => ({
     }
   },
 
-  createGroupFromSheet: async (title, botIds) => {
+  createGroupFromSheet: async (title, botIds, settings) => {
     try {
-      const conversation = await window.api.createGroup(title, botIds)
+      const conversation = await window.api.createGroup(title, botIds, settings)
       set({ groupSheet: { open: false, mode: 'create' } })
       await get().refresh()
       await get().select(conversation.id)
@@ -190,12 +193,16 @@ export const useStore = create<UiStore>((set, get) => ({
     }
   },
 
-  saveGroupMembers: async botIds => {
+  saveGroupMembers: async (botIds, settings) => {
     const id = get().groupSheet.conversationId
     if (!id) return
     try {
       await window.api.setGroupMembers(id, botIds)
-      set({ groupSheet: { open: false, mode: 'create' } })
+      const updated = await window.api.setGroupSettings(id, settings)
+      set(s => ({
+        groupSheet: { open: false, mode: 'create' },
+        conversations: s.conversations.map(c => (c.id === id ? updated : c))
+      }))
       await get().refresh()
     } catch (err) {
       get().showToast(localizeError(get().lang, errText(err)))
@@ -301,6 +308,45 @@ export const useStore = create<UiStore>((set, get) => ({
     }
   },
 
+  clearBotHistory: async botId => {
+    if (typeof window.api.clearBotHistory !== 'function') {
+      get().showToast(translate(get().lang, 'app.restartToLoad'))
+      return
+    }
+    try {
+      await window.api.clearBotHistory(botId)
+      const dm = get().conversations.find(
+        c => c.kind === 'dm' && c.botIds.length === 1 && c.botIds[0] === botId
+      )
+      if (dm) {
+        set(s => ({
+          messages: { ...s.messages, [dm.id]: [] },
+          loaded: { ...s.loaded, [dm.id]: true }
+        }))
+      }
+      await get().refresh()
+    } catch (err) {
+      get().showToast(localizeError(get().lang, errText(err)))
+    }
+  },
+
+  clearConversation: async conversationId => {
+    if (typeof window.api.clearConversation !== 'function') {
+      get().showToast(translate(get().lang, 'app.restartToLoad'))
+      return
+    }
+    try {
+      await window.api.clearConversation(conversationId)
+      set(s => ({
+        messages: { ...s.messages, [conversationId]: [] },
+        loaded: { ...s.loaded, [conversationId]: true }
+      }))
+      await get().refresh()
+    } catch (err) {
+      get().showToast(localizeError(get().lang, errText(err)))
+    }
+  },
+
   saveProvider: async input => {
     await window.api.saveProvider(input)
     await get().refresh()
@@ -385,6 +431,8 @@ export const useStore = create<UiStore>((set, get) => ({
       )
     } else if (event.type === 'cancelled') {
       next = list.map(m => (m.id === event.messageId ? { ...m, status: 'cancelled' } : m))
+    } else if (event.type === 'remove') {
+      next = list.filter(m => m.id !== event.messageId)
     } else {
       next = list.map(m =>
         m.id === event.messageId ? { ...m, status: 'error', error: event.error } : m

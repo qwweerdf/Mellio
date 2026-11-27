@@ -47,7 +47,14 @@ The user configured the following persona for you. Adopt its role, expertise, an
 {{persona}}
 </persona>`
 
-export function composeSystemPrompt(bot: Bot): string {
+export interface PromptCapabilities {
+  webSearch?: boolean
+  /** 供应商实际暴露的搜索工具名，例如 deepseek_web_search / web_search */
+  webSearchTool?: string
+  calculator?: boolean
+}
+
+export function composeSystemPrompt(bot: Bot, capabilities: PromptCapabilities = { calculator: true }): string {
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'local time'
   const dateTime = new Intl.DateTimeFormat('en-US', {
     dateStyle: 'full',
@@ -61,5 +68,21 @@ export function composeSystemPrompt(bot: Bot): string {
     persona: bot.systemPrompt.trim() || 'No specific persona was provided. Be a capable, warm, general-purpose assistant.'
   }
 
-  return BASE_PROMPT.replace(/\{\{(\w+)\}\}/g, (_, key: string) => values[key] ?? '')
+  const tools: string[] = []
+  if (capabilities.calculator !== false) {
+    tools.push('- calculator: use it for arithmetic instead of calculating in your head.')
+  }
+  if (capabilities.webSearch) {
+    const searchName = capabilities.webSearchTool
+    tools.push(
+      `- web search: use the provider's built-in ${searchName ? `\`${searchName}\`` : 'web search'} server tool for questions about latest or current events, news, releases, prices, or anything that may have changed after your training data. Do not invent a tool named "web search"; use only the exact tool name above. Do not claim you cannot access the internet before attempting a search. If search is unavailable or returns nothing, say so.`
+    )
+  }
+  const toolBlock = tools.length
+    ? `\n\n## Available tools\n${tools.join('\n')}\nUse a tool when the task needs it. Never claim to have used a tool you did not use.`
+    : ''
+
+  return (
+    BASE_PROMPT.replace(/\{\{(\w+)\}\}/g, (_, key: string) => values[key] ?? '') + toolBlock
+  )
 }

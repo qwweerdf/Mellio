@@ -38,6 +38,13 @@ export type BotInput = Omit<Bot, 'id'> & { id?: string }
 
 export type ConversationKind = 'dm' | 'group'
 export type ReplyMode = 'all' | 'mention'
+export type CollaborationMode = 'parallel' | 'team'
+
+export interface GroupSettings {
+  mode: CollaborationMode
+  leadBotId?: string
+  maxRejections: number
+}
 
 export interface Conversation {
   id: string
@@ -46,6 +53,12 @@ export interface Conversation {
   kind: ConversationKind
   /** group 下生效：all = 所有 Bot 回复；mention = 只有被 @ 的 Bot 回复 */
   replyMode: ReplyMode
+  /** parallel = 同时回复；team = 负责人拆任务、成员执行、负责人汇总 */
+  collaborationMode: CollaborationMode
+  /** team 模式下的负责人 Bot */
+  leadBotId?: string
+  /** 每个任务最多被负责人驳回几次 */
+  maxRejections: number
   /** 最新一条非空消息，供侧栏预览 */
   lastMessage?: string
   lastMessageAt?: number
@@ -138,6 +151,7 @@ export type RunEvent =
       queries?: string[]
     }
   | { type: 'cancelled'; runId: string; conversationId: string; botId: string; messageId: string }
+  | { type: 'remove'; conversationId: string; messageId: string }
   | { type: 'error'; runId: string; conversationId: string; botId: string; messageId: string; error: string }
 
 export interface AppState {
@@ -153,13 +167,16 @@ export interface MellioApi {
   listMessages(conversationId: string): Promise<Message[]>
   saveBot(input: BotInput): Promise<Bot>
   removeBot(id: string): Promise<void>
+  clearBotHistory(botId: string): Promise<void>
+  clearConversation(conversationId: string): Promise<void>
   saveProvider(input: ProviderInput): Promise<ProviderView>
   removeProvider(id: string): Promise<void>
   testProvider(id: string): Promise<string>
   fetchModels(providerId: string): Promise<string[]>
   openBotChat(botId: string): Promise<Conversation>
-  createGroup(title: string, botIds: string[]): Promise<Conversation>
+  createGroup(title: string, botIds: string[], settings?: GroupSettings): Promise<Conversation>
   setGroupMembers(conversationId: string, botIds: string[]): Promise<void>
+  setGroupSettings(conversationId: string, settings: GroupSettings): Promise<Conversation>
   setReplyMode(conversationId: string, mode: ReplyMode): Promise<void>
   send(input: SendInput): Promise<SendResult>
   cancel(runId: string): Promise<void>
